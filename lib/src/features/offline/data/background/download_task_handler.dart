@@ -229,9 +229,6 @@ class DownloadTaskHandler extends TaskHandler {
       if (parked) {
         // Server unreachable — stop with the queue still in drift so a reconnect
         // (or relaunch) resumes it. No drained marker: it isn't drained, parked.
-        // Main has to be told, or its stop handshake sees pending work and
-        // restarts us straight back into the same dead server.
-        FlutterForegroundTask.sendDataToMain({'kind': 'parked'});
         await _lock?.release();
         await FlutterForegroundTask.stopService();
         return;
@@ -255,6 +252,13 @@ class DownloadTaskHandler extends TaskHandler {
       // Server unreachable resolving pages: leave `downloading` (resumable) and
       // park. Marking it error here poisoned the whole queue — one blip
       // cascaded through every remaining chapter.
+      //
+      // Nothing else reports this chapter, and main's stop handshake would read
+      // the still-pending queue as work stranded by the shutdown and restart us
+      // straight back into the same dead server. (A park that happens mid-
+      // download says so through its `offline` chapterDone instead — sending
+      // both would let a stale one park a session that had already recovered.)
+      FlutterForegroundTask.sendDataToMain({'kind': 'parked'});
       return true;
     }
     if (urls.isEmpty) {
