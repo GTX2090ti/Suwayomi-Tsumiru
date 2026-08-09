@@ -229,6 +229,9 @@ class DownloadTaskHandler extends TaskHandler {
       if (parked) {
         // Server unreachable — stop with the queue still in drift so a reconnect
         // (or relaunch) resumes it. No drained marker: it isn't drained, parked.
+        // Main has to be told, or its stop handshake sees pending work and
+        // restarts us straight back into the same dead server.
+        FlutterForegroundTask.sendDataToMain({'kind': 'parked'});
         await _lock?.release();
         await FlutterForegroundTask.stopService();
         return;

@@ -32,6 +32,7 @@ import '../offline_page_store.dart';
 import '../offline_paths.dart';
 import '../offline_repository.dart';
 import '../offline_settings_providers.dart';
+import '../server_reachability.dart';
 import 'background_completion_log.dart';
 import 'background_download_lock.dart';
 import 'background_token_record.dart';
@@ -66,6 +67,16 @@ class BackgroundDownloadController with WidgetsBindingObserver {
   bool _ensuring = false;
   bool _suppressRestarts = false;
 
+  /// Backoff after the worker parks on an unreachable server. The stop
+  /// handshake sees the queue still pending and restarts immediately, which
+  /// measured 10 service starts — each booting a background isolate — in 60s
+  /// against a dead server.
+  DateTime? _parkedUntil;
+  Duration _parkBackoff = _minParkBackoff;
+  Timer? _parkTimer;
+  static const _minParkBackoff = Duration(seconds: 15);
+  static const _maxParkBackoff = Duration(minutes: 5);
+
   OfflineDatabase get _db => _ref.read(offlineDatabaseProvider);
   OfflinePaths get _paths => _ref.read(offlinePathsProvider);
   OfflinePageStore get _store => _ref.read(offlinePageStoreProvider);
@@ -91,6 +102,7 @@ class BackgroundDownloadController with WidgetsBindingObserver {
   }
 
   void dispose() {
+    _parkTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     final cb = _workerEventCallback;
     if (cb != null) FlutterForegroundTask.removeTaskDataCallback(cb);
@@ -105,13 +117,20 @@ class BackgroundDownloadController with WidgetsBindingObserver {
   /// pending ids into an already-running worker, else starts one with a fresh
   /// work order. Wi-Fi-only is enforced here: won't start on a metered
   /// connection when the setting is on.
-  Future<void> ensureServiceRunning() async {
+  /// [force] is for signals that supersede the park backoff: an explicit user
+  /// action, or proof the server answered.
+  Future<void> ensureServiceRunning({bool force = false}) async {
     if (!Platform.isAndroid) return;
     if (_suppressRestarts) return;
     // PAUSE GATE — first line so every restart path (start, onEnqueued,
     // replayOnResume, launch replay, drain/stop handlers, connectivity-resume)
     // inherits it.
     if (_isPaused()) return;
+    if (force) {
+      _clearPark();
+    } else if (_parkedUntil?.isAfter(DateTime.now()) ?? false) {
+      return;
+    }
     if (_ensuring) return;
     _ensuring = true;
     try {
@@ -179,7 +198,8 @@ class BackgroundDownloadController with WidgetsBindingObserver {
 
   /// Called after the caller has written drift `queued` for [chapterIds]. Just
   /// ensures the service owns the queue (it reads drift, not the argument).
-  Future<void> onEnqueued(List<int> chapterIds) => ensureServiceRunning();
+  Future<void> onEnqueued(List<int> chapterIds) =>
+      ensureServiceRunning(force: true);
 
   /// True when the user has paused all on-device downloads (persisted flag).
   /// Read synchronously so the start gate can't be bypassed by an unhydrated
@@ -203,7 +223,7 @@ class BackgroundDownloadController with WidgetsBindingObserver {
   }
 
   /// Resume on-device downloads (caller has cleared the persisted flag first).
-  Future<void> resume() => ensureServiceRunning();
+  Future<void> resume() => ensureServiceRunning(force: true);
 
   Future<void> stopAndClearWorkOrder() async {
     if (!Platform.isAndroid) return;
@@ -365,7 +385,44 @@ class BackgroundDownloadController with WidgetsBindingObserver {
         unawaited(_onChapterDone(data));
       case 'drained':
         unawaited(_onDrained());
+      case 'parked':
+        _onParked();
     }
+  }
+
+  /// The worker gave up on an unreachable server and stopped with the queue
+  /// intact.
+  void _onParked() {
+    if (_parkedUntil?.isAfter(DateTime.now()) ?? false) return;
+    final delay = _parkBackoff;
+    _parkedUntil = DateTime.now().add(delay);
+    _parkTimer?.cancel();
+    _parkTimer = Timer(delay, () {
+      _parkedUntil = null;
+      unawaited(ensureServiceRunning());
+    });
+    _parkBackoff = delay * 2 > _maxParkBackoff ? _maxParkBackoff : delay * 2;
+    logger.i('Offline: server unreachable — downloads parked for $delay');
+    // Lets the reconnect listener resume us as soon as anything else in the app
+    // reaches the server, instead of waiting out the backoff.
+    _ref.read(serverUnreachableProvider.notifier).set(true);
+    // Only on the first park of a run: the service took its own notification
+    // with it when it stopped, so without this the queue just goes quiet.
+    if (delay == _minParkBackoff) unawaited(_notifyPaused(_PauseReason.server));
+  }
+
+  void _clearPark() {
+    _retryNow();
+    _parkBackoff = _minParkBackoff;
+  }
+
+  /// Earn one attempt without resetting the escalation ladder — for signals
+  /// that suggest the server may be back but don't prove it, so a flapping
+  /// link can't restart the service as often as it flaps.
+  void _retryNow() {
+    _parkTimer?.cancel();
+    _parkTimer = null;
+    _parkedUntil = null;
   }
 
   /// Apply a `chapterStart` inside a transaction that checks the chapter isn't
@@ -486,6 +543,10 @@ class BackgroundDownloadController with WidgetsBindingObserver {
   Future<void> _onChapterDone(Map data) async {
     final chapterId = data['chapterId'] as int?;
     final status = data['status'] as String?;
+    // Ahead of the awaits below: this event races the worker's `parked` message,
+    // and the stop handshake at the end of this method would otherwise restart
+    // the service before the latch is set.
+    if (status == 'offline') _onParked();
     // Outside the status guard: a cancel (pause, delete, Wi-Fi drop) reports a
     // null status, and leaving those entries behind grows the map for the life
     // of the process and shows a re-queued chapter the last attempt's percent.
@@ -510,7 +571,10 @@ class BackgroundDownloadController with WidgetsBindingObserver {
         // stale event, a delete, or short staging all end here without
         // publishing anything, and counting those would have the completion
         // notification claim chapters the user doesn't have.
-        if (result == ChapterCommitResult.committed) _sessionDownloaded++;
+        if (result == ChapterCommitResult.committed) {
+          _sessionDownloaded++;
+          _clearPark(); // a chapter landed, so the server is demonstrably fine
+        }
       } else {
         await applyBackgroundTerminalState(
           db: _db,
@@ -695,7 +759,9 @@ class BackgroundDownloadController with WidgetsBindingObserver {
       // a resolve-time network drop that would otherwise strand until app
       // resume.
       final pending = await _pendingChapters();
-      if (pending.isNotEmpty) await ensureServiceRunning();
+      if (pending.isEmpty) return;
+      _retryNow();
+      await ensureServiceRunning();
     }());
   }
 

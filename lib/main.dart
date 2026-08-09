@@ -350,7 +350,7 @@ Future<void> _startApp() async {
             unawaited(
               container
                   .read(backgroundDownloadControllerProvider)
-                  .ensureServiceRunning(),
+                  .ensureServiceRunning(force: true),
             );
           }
         }
