@@ -243,8 +243,9 @@ Future<void> saveChapterToDevice(WidgetRef ref, int chapterId) async {
   }
   // Queue it (drift `queued` is the single source of truth). On Android the
   // foreground-service worker owns the downloading; elsewhere the main-isolate
-  // pump drains it.
-  await coordinator.queueChapter(chapterId);
+  // pump drains it. Both callers are the user pressing save or retry, which is
+  // the one thing allowed to revive a terminally-failed chapter.
+  await coordinator.queueChapter(chapterId, allowErrored: true);
   await ref.read(downloadStarterProvider)();
 }
 

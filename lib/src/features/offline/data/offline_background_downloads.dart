@@ -141,12 +141,9 @@ Future<void> initOfflineDownloads(ProviderContainer container) async {
     db: db,
     store: container.read(offlinePageStoreProvider),
   );
-  final errored = await db.chaptersInState(OfflineDeviceState.error);
-  for (final c in errored) {
-    await db.setChapterDeviceState(c.id, OfflineDeviceState.queued);
-  }
-  if (errored.isNotEmpty) {
-    logger.i('Offline: requeued ${errored.length} previously-errored chapters');
-  }
+  // `error` is terminal and is NOT requeued here. This used to promote every
+  // errored chapter on every launch, so a chapter the server can never serve
+  // was retried forever — one of them is enough to keep a device and a server
+  // busy indefinitely. The user retries from the chapter's save button.
   await coord.pumpDownloads();
 }

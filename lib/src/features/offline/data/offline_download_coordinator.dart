@@ -174,9 +174,10 @@ class OfflineDownloadCoordinator {
   }
 
   /// Add a chapter to the persistent download queue (state `queued`). The pump
-  /// starts it when it reaches the front. Skips chapters already downloaded or
-  /// in flight.
-  Future<void> queueChapter(int chapterId) async {
+  /// starts it when it reaches the front. Skips chapters already downloaded, in
+  /// flight, or terminally `error` — pass [allowErrored] for an explicit user
+  /// retry, which is the only thing that may revive a failed chapter.
+  Future<void> queueChapter(int chapterId, {bool allowErrored = false}) async {
     if (_deleting.containsKey(chapterId)) return;
     await db.transaction(() async {
       // Recheck inside the transaction (serialized with deleteChapter): `none`
@@ -190,6 +191,10 @@ class OfflineDownloadCoordinator {
           c.deviceState == OfflineDeviceState.queued) {
         return;
       }
+      // `error` is terminal — only an explicit user retry leaves it, via
+      // retryChapterDownload. Automatic callers (reconcile, catch-up) must not
+      // resurrect a chapter that already failed for a non-transient reason.
+      if (c.deviceState == OfflineDeviceState.error && !allowErrored) return;
       await db.setChapterDeviceState(chapterId, OfflineDeviceState.queued);
     });
   }
