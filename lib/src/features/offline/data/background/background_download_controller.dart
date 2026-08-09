@@ -74,6 +74,10 @@ class BackgroundDownloadController with WidgetsBindingObserver {
   DateTime? _parkedUntil;
   Duration _parkBackoff = _minParkBackoff;
   Timer? _parkTimer;
+
+  /// Bumped on every park so a slow chapter commit can tell whether the server
+  /// it proved reachable is the one currently parked, or one from before.
+  int _parkEpoch = 0;
   static const _minParkBackoff = Duration(seconds: 15);
   static const _maxParkBackoff = Duration(minutes: 5);
 
@@ -103,6 +107,9 @@ class BackgroundDownloadController with WidgetsBindingObserver {
 
   void dispose() {
     _parkTimer?.cancel();
+    // Mirrors register(): off Android nothing was ever wired up, and touching
+    // WidgetsBinding here would fault a container-only test with no binding.
+    if (!Platform.isAndroid) return;
     WidgetsBinding.instance.removeObserver(this);
     final cb = _workerEventCallback;
     if (cb != null) FlutterForegroundTask.removeTaskDataCallback(cb);
@@ -395,12 +402,8 @@ class BackgroundDownloadController with WidgetsBindingObserver {
   void _onParked() {
     if (_parkedUntil?.isAfter(DateTime.now()) ?? false) return;
     final delay = _parkBackoff;
-    _parkedUntil = DateTime.now().add(delay);
-    _parkTimer?.cancel();
-    _parkTimer = Timer(delay, () {
-      _parkedUntil = null;
-      unawaited(ensureServiceRunning());
-    });
+    _parkEpoch++;
+    _armPark(delay);
     _parkBackoff = delay * 2 > _maxParkBackoff ? _maxParkBackoff : delay * 2;
     logger.i('Offline: server unreachable — downloads parked for $delay');
     // Lets the reconnect listener resume us as soon as anything else in the app
@@ -411,18 +414,31 @@ class BackgroundDownloadController with WidgetsBindingObserver {
     if (delay == _minParkBackoff) unawaited(_notifyPaused(_PauseReason.server));
   }
 
-  void _clearPark() {
-    _retryNow();
-    _parkBackoff = _minParkBackoff;
+  void _armPark(Duration delay) {
+    _parkedUntil = DateTime.now().add(delay);
+    _parkTimer?.cancel();
+    _parkTimer = Timer(delay, () {
+      _parkedUntil = null;
+      unawaited(ensureServiceRunning());
+    });
   }
 
-  /// Earn one attempt without resetting the escalation ladder — for signals
-  /// that suggest the server may be back but don't prove it, so a flapping
-  /// link can't restart the service as often as it flaps.
-  void _retryNow() {
+  void _clearPark() {
     _parkTimer?.cancel();
     _parkTimer = null;
     _parkedUntil = null;
+    _parkBackoff = _minParkBackoff;
+  }
+
+  /// Bring the next attempt forward for a signal that suggests the server may
+  /// be back but doesn't prove it. Never nearer than the minimum, so a link
+  /// flapping every few seconds can't restart the service every few seconds.
+  void _retrySooner() {
+    final until = _parkedUntil;
+    if (until == null) return;
+    if (until.difference(DateTime.now()) > _minParkBackoff) {
+      _armPark(_minParkBackoff);
+    }
   }
 
   /// Apply a `chapterStart` inside a transaction that checks the chapter isn't
@@ -547,6 +563,7 @@ class BackgroundDownloadController with WidgetsBindingObserver {
     // and the stop handshake at the end of this method would otherwise restart
     // the service before the latch is set.
     if (status == 'offline') _onParked();
+    final epoch = _parkEpoch;
     // Outside the status guard: a cancel (pause, delete, Wi-Fi drop) reports a
     // null status, and leaving those entries behind grows the map for the life
     // of the process and shows a re-queued chapter the last attempt's percent.
@@ -573,7 +590,9 @@ class BackgroundDownloadController with WidgetsBindingObserver {
         // notification claim chapters the user doesn't have.
         if (result == ChapterCommitResult.committed) {
           _sessionDownloaded++;
-          _clearPark(); // a chapter landed, so the server is demonstrably fine
+          // A chapter landed, so the server is demonstrably fine — unless a
+          // later chapter parked while this one was committing.
+          if (_parkEpoch == epoch) _clearPark();
         }
       } else {
         await applyBackgroundTerminalState(
@@ -760,7 +779,7 @@ class BackgroundDownloadController with WidgetsBindingObserver {
       // resume.
       final pending = await _pendingChapters();
       if (pending.isEmpty) return;
-      _retryNow();
+      _retrySooner();
       await ensureServiceRunning();
     }());
   }
@@ -815,9 +834,14 @@ class BackgroundDownloadController with WidgetsBindingObserver {
 /// No-op on iOS/desktop; on web this file isn't compiled at all —
 /// `background_download_controller_shim.dart` swaps in a stub.
 final backgroundDownloadControllerProvider =
-    Provider<BackgroundDownloadController>(
-      (Ref ref) => BackgroundDownloadController(ref),
-    );
+    Provider<BackgroundDownloadController>((Ref ref) {
+      final controller = BackgroundDownloadController(ref);
+      // App-lifetime in practice, but a container teardown (tests, a full
+      // reset) must not leave its retry timer and listeners running against a
+      // disposed Ref.
+      ref.onDispose(controller.dispose);
+      return controller;
+    });
 
 /// Initialise `flutter_foreground_task` (communication port + notification
 /// channel/options). Call once early in `main()`. Android-only; no-op elsewhere.

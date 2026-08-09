@@ -70,7 +70,10 @@ final downloadStarterProvider = Provider<Future<void> Function()>((Ref ref) {
     if (isAndroidNative) {
       await ref
           .read(backgroundDownloadControllerProvider)
-          .ensureServiceRunning();
+          // Something asked for downloads to start — a save, a retry, a
+          // finished library update. That outranks the backoff the controller
+          // applies to its own restarts while the server is unreachable.
+          .ensureServiceRunning(force: true);
     } else {
       await ref.read(offlineDownloadCoordinatorProvider)?.pumpDownloads();
     }
