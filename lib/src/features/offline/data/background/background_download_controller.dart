@@ -460,6 +460,30 @@ class BackgroundDownloadController with WidgetsBindingObserver {
     }
   }
 
+  /// Says why the queue stopped. The foreground service owns the download
+  /// notification, so stopping it removes the only on-screen explanation —
+  /// without this, downloads appear to stop for no reason.
+  Future<void> _notifyPaused(_PauseReason reason) async {
+    if (!_ref.read(notificationsDownloadsEnabledProvider).ifNull(true)) return;
+    try {
+      final locales = WidgetsBinding.instance.platformDispatcher.locales;
+      final l10n = lookupAppLocalizations(
+        locales.isNotEmpty ? locales.first : const Locale('en'),
+      );
+      final service = LocalNotificationService();
+      await service.init();
+      await service.showDownloadError(
+        l10n.notificationDownloadsPausedTitle,
+        switch (reason) {
+          _PauseReason.wifi => l10n.notificationDownloadsPausedWifi,
+          _PauseReason.server => l10n.notificationDownloadsPausedNoServer,
+        },
+      );
+    } catch (_) {
+      // Best-effort — a missed notification is not data loss.
+    }
+  }
+
   Future<void> _onChapterDone(Map data) async {
     final chapterId = data['chapterId'] as int?;
     final status = data['status'] as String?;
@@ -654,6 +678,10 @@ class BackgroundDownloadController with WidgetsBindingObserver {
             'Offline: dropped to metered with Wi-Fi-only — stopping FGS',
           );
           await FlutterForegroundTask.stopService();
+          // The service owns the download notification, so stopping it takes
+          // the only on-screen explanation with it — downloads would appear to
+          // stop for no reason.
+          await _notifyPaused(_PauseReason.wifi);
         }
         return;
       }
@@ -740,3 +768,7 @@ void initForegroundTaskService() {
     ),
   );
 }
+
+/// Why on-device downloads stopped, for the notification that stands in for the
+/// foreground service's own once it has been torn down.
+enum _PauseReason { wifi, server }
