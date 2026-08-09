@@ -165,6 +165,10 @@ Future<List<String>?> repairDownloadedChapterPages({
   required OfflinePageStore store,
   required OfflinePaths paths,
   required int chapterId,
+  // Kept out of this function so it stays Ref-less and testable: re-queueing
+  // without starting anything leaves the chapter waiting on an unrelated
+  // download trigger, which is not a self-heal.
+  void Function()? onRequeued,
 }) async {
   final ch = await db.chapterById(chapterId);
   if (ch == null || ch.deviceState != OfflineDeviceState.downloaded) return null;
@@ -185,6 +189,7 @@ Future<List<String>?> repairDownloadedChapterPages({
         bytes: 0,
       );
     });
+    onRequeued?.call();
     return null;
   }
 

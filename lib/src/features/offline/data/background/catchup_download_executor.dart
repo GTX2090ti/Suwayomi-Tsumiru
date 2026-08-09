@@ -150,18 +150,24 @@ Future<bool> runCatchupDownloads({
         final row = chapters.byId[chapterId];
         if (row == null) continue;
 
+        // ONE attempt gate, ahead of both hops. A chapter the source or the
+        // server can never produce is otherwise retried on every wake for the
+        // life of the install, and gating only one hop still leaves the other
+        // unbounded.
+        //
+        // The counter is the record that this chapter is finished with, so it
+        // survives dropping the obligation: `desired` is rebuilt from the spec
+        // each run, so a cleared counter just starts the attempts again.
+        // Success clears it; so does the chapter leaving the keep window.
+        final spent = retries[chapterId] ?? 0;
+        if (spent >= _maxChapterAttempts) {
+          pending.remove(chapterId);
+          serverFetch.remove(chapterId);
+          continue;
+        }
+
         if (!row.serverIsDownloaded) {
-          // Two-hop: server first. Bounded retries; a dead source stops
-          // burning the budget and surfaces via the foreground banner.
-          final spent = retries[chapterId] ?? 0;
-          if (spent >= _maxChapterAttempts) {
-            // Out of attempts: drop the obligation instead of carrying it
-            // forever. Left pending it is re-examined on every wake for the
-            // life of the install.
-            pending.remove(chapterId);
-            retries.remove(chapterId);
-            continue;
-          }
+          // Two-hop: ask the server to fetch it from the source first.
           final ok = await _enqueueServerDownload(target, record, chapterId);
           if (ok) {
             serverFetch[chapterId] = mangaId;
@@ -188,15 +194,7 @@ Future<bool> runCatchupDownloads({
           serverFetch.remove(chapterId);
           retries.remove(chapterId);
         } else {
-          // This hop had no attempt counter, so a chapter the server can never
-          // serve stayed an obligation and was retried on every wake.
-          final spent = (retries[chapterId] ?? 0) + 1;
-          if (spent >= _maxChapterAttempts) {
-            pending.remove(chapterId);
-            retries.remove(chapterId);
-          } else {
-            retries[chapterId] = spent;
-          }
+          retries[chapterId] = spent + 1;
         }
       }
 
