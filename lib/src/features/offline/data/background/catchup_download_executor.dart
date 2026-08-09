@@ -162,7 +162,10 @@ Future<bool> runCatchupDownloads({
         if (!row.serverIsDownloaded) {
           final spent = retries[chapterId] ?? 0;
           if (spent >= _maxChapterAttempts) {
-            pending.remove(chapterId);
+            // Stop asking, but keep the obligation: it is what tells the ledger
+            // which manga this chapter belongs to, so the window cleanup below
+            // can drop the counter with it once the chapter is no longer
+            // wanted. Skipping costs nothing — the gate is ahead of any I/O.
             serverFetch.remove(chapterId);
             continue;
           }
@@ -180,10 +183,7 @@ Future<bool> runCatchupDownloads({
         // many runs the fetch above took.
         serverFetch.remove(chapterId);
         final dlSpent = dlRetries[chapterId] ?? 0;
-        if (dlSpent >= _maxChapterAttempts) {
-          pending.remove(chapterId);
-          continue;
-        }
+        if (dlSpent >= _maxChapterAttempts) continue;
 
         final attempt = await _downloadOneChapter(
           target: target,
@@ -209,10 +209,22 @@ Future<bool> runCatchupDownloads({
       }
 
       // Drop obligations that are satisfied (present) or no longer desired
-      // (rule window moved on) — either way there is nothing left to do.
-      pending.removeWhere(
-        (c, m) => m == mangaId && (!desired.contains(c) || present.contains(c)),
-      );
+      // (rule window moved on) — either way there is nothing left to do. The
+      // attempt counters go with them: they exist to stop a chapter being
+      // retried while it is still wanted, so one left behind would meet a
+      // re-added chapter with an already-spent budget.
+      final done = {
+        for (final e in pending.entries)
+          if (e.value == mangaId &&
+              (!desired.contains(e.key) || present.contains(e.key)))
+            e.key,
+      };
+      for (final c in done) {
+        pending.remove(c);
+        serverFetch.remove(c);
+        retries.remove(c);
+        dlRetries.remove(c);
+      }
 
       ledger = ledger.copyWith(
         pendingDownloads: pending,
@@ -228,16 +240,26 @@ Future<bool> runCatchupDownloads({
   }
 }
 
-CatchupLedger _dropManga(CatchupLedger ledger, int mangaId) => ledger.copyWith(
-  pendingDownloads: {
+CatchupLedger _dropManga(CatchupLedger ledger, int mangaId) {
+  final gone = {
     for (final e in ledger.pendingDownloads.entries)
-      if (e.value != mangaId) e.key: e.value,
-  },
-  pendingServerFetch: {
+      if (e.value == mangaId) e.key,
     for (final e in ledger.pendingServerFetch.entries)
-      if (e.value != mangaId) e.key: e.value,
-  },
-);
+      if (e.value == mangaId) e.key,
+  };
+  Map<int, int> without(Map<int, int> m) => {
+    for (final e in m.entries)
+      if (!gone.contains(e.key)) e.key: e.value,
+  };
+  return ledger.copyWith(
+    pendingDownloads: without(ledger.pendingDownloads),
+    pendingServerFetch: without(ledger.pendingServerFetch),
+    // The rule is gone, so the attempts spent under it mean nothing — leaving
+    // them would meet the manga with a spent budget if it came back.
+    serverFetchRetries: without(ledger.serverFetchRetries),
+    downloadRetries: without(ledger.downloadRetries),
+  );
+}
 
 /// Chapters already recorded in the un-replayed log, or already committed on
 /// disk — work the spec's snapshot can't know about yet.
