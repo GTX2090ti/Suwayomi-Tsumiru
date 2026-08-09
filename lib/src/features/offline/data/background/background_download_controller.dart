@@ -409,7 +409,6 @@ class BackgroundDownloadController with WidgetsBindingObserver {
   /// intact.
   void _onParked() {
     if (_parkedUntil?.isAfter(DateTime.now()) ?? false) return;
-    _parkEpoch++;
     final delay = _nextBackoff();
     _armPark(delay);
     logger.i('Offline: server unreachable — downloads parked for $delay');
@@ -429,6 +428,10 @@ class BackgroundDownloadController with WidgetsBindingObserver {
   }
 
   void _armPark(Duration delay) {
+    // Every arming invalidates in-flight completions: a commit that started
+    // before the park would otherwise finish, see its captured epoch as
+    // current, and clear a park armed while it was running.
+    _parkEpoch++;
     _parkedUntil = DateTime.now().add(delay);
     _parkTimer?.cancel();
     _parkTimer = Timer(delay, () => unawaited(_onParkExpired()));
