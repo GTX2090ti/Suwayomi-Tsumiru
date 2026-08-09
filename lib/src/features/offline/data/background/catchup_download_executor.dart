@@ -150,6 +150,14 @@ Future<bool> runCatchupDownloads({
         final row = chapters.byId[chapterId];
         if (row == null) continue;
 
+        // The server hop finished — what it was waiting for is now on the
+        // server. The device hop gets its own budget rather than inheriting
+        // the attempts spent waiting on the source, or a fetch that took every
+        // attempt before succeeding could never be downloaded.
+        if (row.serverIsDownloaded && serverFetch.remove(chapterId) != null) {
+          retries.remove(chapterId);
+        }
+
         // ONE attempt gate, ahead of both hops. A chapter the source or the
         // server can never produce is otherwise retried on every wake for the
         // life of the install, and gating only one hop still leaves the other
