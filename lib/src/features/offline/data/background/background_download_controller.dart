@@ -685,13 +685,22 @@ class BackgroundDownloadController with WidgetsBindingObserver {
         }
         return;
       }
+      // The link went away entirely. Only the Wi-Fi-only case used to stop the
+      // service, so with that setting off the worker kept running against a
+      // network that was gone — every queued chapter discovering it separately.
+      if (!hasConnection) {
+        if (await FlutterForegroundTask.isRunningService) {
+          logger.i('Offline: no connection — stopping FGS');
+          await FlutterForegroundTask.stopService();
+          await _notifyPaused(_PauseReason.server);
+        }
+        return;
+      }
       // A usable link returned — resume pending work; covers a queue parked by
       // a resolve-time network drop that would otherwise strand until app
       // resume.
-      if (hasConnection) {
-        final pending = await _pendingChapters();
-        if (pending.isNotEmpty) await ensureServiceRunning();
-      }
+      final pending = await _pendingChapters();
+      if (pending.isNotEmpty) await ensureServiceRunning();
     }());
   }
 

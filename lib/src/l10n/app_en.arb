@@ -2578,7 +2578,7 @@
   "@notificationDownloadsPausedTitle": {
     "description": "Notification shown when on-device downloads stop because they cannot continue"
   },
-  "notificationDownloadsPausedNoServer": "Can't reach your server. They'll resume when it's back.",
+  "notificationDownloadsPausedNoServer": "No connection. They'll resume when it's back.",
   "@notificationDownloadsPausedNoServer": {
     "description": "Body when downloads pause because the Suwayomi server is unreachable"
   },
