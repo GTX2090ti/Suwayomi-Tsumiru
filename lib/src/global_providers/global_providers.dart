@@ -144,6 +144,21 @@ GraphQLClient graphQlClient(Ref ref) {
         });
       }
       return response;
+    }).handleError((Object error) {
+      // The inverse: a request that never reached the server marks it
+      // unreachable for the whole app. Only the downloader used to set this,
+      // so every other caller kept trying — and each one paid its own retries
+      // discovering the same thing. Reachability of the configured server is
+      // the right authority here, not whether the internet works: a LAN-only
+      // Suwayomi is perfectly reachable with no uplink at all.
+      if (isConnectionError(error)) {
+        Future(() {
+          try {
+            ref.read(serverUnreachableProvider.notifier).set(true);
+          } catch (_) {}
+        });
+      }
+      throw error;
     });
   });
   link = reachabilityLink.concat(link);
