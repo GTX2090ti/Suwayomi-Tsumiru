@@ -338,12 +338,22 @@ Future<void> _startApp() async {
                   }
                 }),
           );
-          // Desktop pump parks while offline; reconnect restarts it. (No-op on
-          // Android — the worker owns downloads there.)
+          // Desktop pump parks while offline; reconnect restarts it.
           final coordinator = container.read(
             offlineDownloadCoordinatorProvider,
           );
           if (coordinator != null) unawaited(coordinator.pumpDownloads());
+          // Android's worker owns downloads, and connectivity callbacks only
+          // fire on interface changes — a server that went down and came back
+          // over the same Wi-Fi produces no such event, so the queue stayed
+          // parked until something else happened to start it.
+          if (isAndroidNative) {
+            unawaited(
+              container
+                  .read(backgroundDownloadControllerProvider)
+                  .ensureServiceRunning(),
+            );
+          }
         }
 
         container.listen<bool>(serverUnreachableProvider, (prev, next) {
