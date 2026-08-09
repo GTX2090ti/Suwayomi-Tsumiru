@@ -180,7 +180,11 @@ GraphQLClient graphQlClient(Ref ref) {
   );
 }
 
-@riverpod
+// keepAlive: autoDispose tied the websocket's life to whatever screen happened
+// to be watching a subscription, so navigating tore the socket down and the
+// next screen opened a fresh one. Measured against the server: 2 handshakes per
+// 10 min idle, 53 while navigating.
+@Riverpod(keepAlive: true)
 GraphQLClient graphQlSubscriptionClient(Ref ref) {
   final authType = ref.watch(authTypeKeyProvider) ?? DBKeys.authType.initial;
   final credentials = ref.watch(credentialsProvider).value;
