@@ -206,7 +206,15 @@ class BackgroundDownloadController with WidgetsBindingObserver {
   /// Called after the caller has written drift `queued` for [chapterIds]. Just
   /// ensures the service owns the queue (it reads drift, not the argument).
   Future<void> onEnqueued(List<int> chapterIds) =>
-      ensureServiceRunning(force: true);
+      requestStart(userInitiated: true);
+
+  /// Something outside the controller wants downloads moving. A user action
+  /// outranks the park backoff outright; an automated pass only brings the next
+  /// attempt forward, so a trigger that repeats can't defeat it.
+  Future<void> requestStart({bool userInitiated = false}) {
+    if (!userInitiated) _retrySooner();
+    return ensureServiceRunning(force: userInitiated);
+  }
 
   /// True when the user has paused all on-device downloads (persisted flag).
   /// Read synchronously so the start gate can't be bypassed by an unhydrated
@@ -401,10 +409,9 @@ class BackgroundDownloadController with WidgetsBindingObserver {
   /// intact.
   void _onParked() {
     if (_parkedUntil?.isAfter(DateTime.now()) ?? false) return;
-    final delay = _parkBackoff;
     _parkEpoch++;
+    final delay = _nextBackoff();
     _armPark(delay);
-    _parkBackoff = delay * 2 > _maxParkBackoff ? _maxParkBackoff : delay * 2;
     logger.i('Offline: server unreachable — downloads parked for $delay');
     // Lets the reconnect listener resume us as soon as anything else in the app
     // reaches the server, instead of waiting out the backoff.
@@ -414,13 +421,29 @@ class BackgroundDownloadController with WidgetsBindingObserver {
     if (delay == _minParkBackoff) unawaited(_notifyPaused(_PauseReason.server));
   }
 
+  /// The delay to wait now, doubling what the next one will be.
+  Duration _nextBackoff() {
+    final delay = _parkBackoff;
+    _parkBackoff = delay * 2 > _maxParkBackoff ? _maxParkBackoff : delay * 2;
+    return delay;
+  }
+
   void _armPark(Duration delay) {
     _parkedUntil = DateTime.now().add(delay);
     _parkTimer?.cancel();
-    _parkTimer = Timer(delay, () {
-      _parkedUntil = null;
-      unawaited(ensureServiceRunning());
-    });
+    _parkTimer = Timer(delay, () => unawaited(_onParkExpired()));
+  }
+
+  Future<void> _onParkExpired() async {
+    _parkedUntil = null;
+    await ensureServiceRunning();
+    // The start can decline — Android refusing the service, Wi-Fi-only holding
+    // it back — and the deadline is gone by then, so without re-arming here the
+    // queue would sit with nothing left to wake it.
+    if (_parkedUntil != null) return;
+    if (await FlutterForegroundTask.isRunningService) return;
+    if ((await _pendingChapters()).isEmpty) return;
+    _armPark(_nextBackoff());
   }
 
   void _clearPark() {
@@ -769,6 +792,10 @@ class BackgroundDownloadController with WidgetsBindingObserver {
       if (!hasConnection) {
         if (await FlutterForegroundTask.isRunningService) {
           logger.i('Offline: no connection — stopping FGS');
+          // Before the stop: the cancelled chapter's terminal event runs the
+          // restart handshake, which would put a fresh worker straight back on
+          // a network that isn't there.
+          _armPark(_nextBackoff());
           await FlutterForegroundTask.stopService();
           await _notifyPaused(_PauseReason.server);
         }

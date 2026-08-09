@@ -22,6 +22,7 @@ class BackgroundDownloadController {
   void dispose() {}
   Future<void> ensureServiceRunning({bool force = false}) async {}
   Future<void> onEnqueued(List<int> chapterIds) async {}
+  Future<void> requestStart({bool userInitiated = false}) async {}
   Future<void> onRemoved(int chapterId) async {}
   Future<void> recordChapterDeleted(int chapterId, int newGeneration) async {}
   Future<void> onWifiOnlyChanged(bool value) async {}
