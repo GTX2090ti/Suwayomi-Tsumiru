@@ -174,10 +174,15 @@ Future<List<String>?> repairDownloadedChapterPages({
   if (ch == null || ch.deviceState != OfflineDeviceState.downloaded) return null;
 
   final committed = await store.committedPages(ch.mangaId, chapterId);
-  if (committed.isEmpty) {
+  // Short counts as badly as none: rebuilding rows from a directory that lost
+  // half its files certifies a truncated chapter as complete, and the reader
+  // then shows it that way forever. pageCount is 0 for rows that never learned
+  // their length, which is not evidence of a short read.
+  final short = ch.pageCount > 0 && committed.length < ch.pageCount;
+  if (committed.isEmpty || short) {
     logger.w(
-      'Offline: chapter $chapterId claims downloaded with no pages on disk, '
-      're-queueing',
+      'Offline: chapter $chapterId claims downloaded with '
+      '${committed.length}/${ch.pageCount} pages on disk, re-queueing',
     );
     await db.transaction(() async {
       await (db.delete(

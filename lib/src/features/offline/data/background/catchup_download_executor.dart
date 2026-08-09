@@ -140,6 +140,7 @@ Future<bool> runCatchupDownloads({
 
       final serverFetch = {...ledger.pendingServerFetch};
       final retries = {...ledger.serverFetchRetries};
+      final dlRetries = {...ledger.downloadRetries};
       final pending = {...ledger.pendingDownloads};
 
       for (final chapterId in desired.difference(present)) {
@@ -150,37 +151,37 @@ Future<bool> runCatchupDownloads({
         final row = chapters.byId[chapterId];
         if (row == null) continue;
 
-        // The server hop finished — what it was waiting for is now on the
-        // server. The device hop gets its own budget rather than inheriting
-        // the attempts spent waiting on the source, or a fetch that took every
-        // attempt before succeeding could never be downloaded.
-        if (row.serverIsDownloaded && serverFetch.remove(chapterId) != null) {
-          retries.remove(chapterId);
-        }
-
-        // ONE attempt gate, ahead of both hops. A chapter the source or the
-        // server can never produce is otherwise retried on every wake for the
-        // life of the install, and gating only one hop still leaves the other
-        // unbounded.
+        // A budget per hop, spent only on that hop's own failures. Sharing one
+        // meant a slow source could exhaust a chapter before the device had
+        // tried at all, and a chapter neither hop can produce is otherwise
+        // retried on every wake for the life of the install.
         //
-        // The counter is the record that this chapter is finished with, so it
-        // survives dropping the obligation: `desired` is rebuilt from the spec
-        // each run, so a cleared counter just starts the attempts again.
-        // Success clears it; so does the chapter leaving the keep window.
-        final spent = retries[chapterId] ?? 0;
-        if (spent >= _maxChapterAttempts) {
-          pending.remove(chapterId);
-          serverFetch.remove(chapterId);
-          continue;
-        }
-
+        // Counters outlive the obligation they gave up on: `desired` is rebuilt
+        // from the spec each run, so a cleared counter just starts the attempts
+        // over. Success clears them; so does the chapter leaving the window.
         if (!row.serverIsDownloaded) {
-          // Two-hop: ask the server to fetch it from the source first.
+          final spent = retries[chapterId] ?? 0;
+          if (spent >= _maxChapterAttempts) {
+            pending.remove(chapterId);
+            serverFetch.remove(chapterId);
+            continue;
+          }
+          // Two-hop: ask the server to fetch it from the source first. A failed
+          // ask is the server not being there, which costs nothing.
           final ok = await _enqueueServerDownload(target, record, chapterId);
           if (ok) {
             serverFetch[chapterId] = mangaId;
             retries[chapterId] = spent + 1;
           }
+          continue;
+        }
+
+        // On the server now, so this is a fresh job with its own budget however
+        // many runs the fetch above took.
+        serverFetch.remove(chapterId);
+        final dlSpent = dlRetries[chapterId] ?? 0;
+        if (dlSpent >= _maxChapterAttempts) {
+          pending.remove(chapterId);
           continue;
         }
 
@@ -201,8 +202,9 @@ Future<bool> runCatchupDownloads({
           pending.remove(chapterId);
           serverFetch.remove(chapterId);
           retries.remove(chapterId);
+          dlRetries.remove(chapterId);
         } else if (!attempt.transient) {
-          retries[chapterId] = spent + 1;
+          dlRetries[chapterId] = dlSpent + 1;
         }
       }
 
@@ -216,6 +218,7 @@ Future<bool> runCatchupDownloads({
         pendingDownloads: pending,
         pendingServerFetch: serverFetch,
         serverFetchRetries: retries,
+        downloadRetries: dlRetries,
       );
       await catchupStore.writeLedger(config.serverId, ledger);
     }
