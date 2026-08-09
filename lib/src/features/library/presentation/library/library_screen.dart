@@ -41,9 +41,11 @@ import 'widgets/library_sections_view.dart';
 
 /// Wraps a library Scaffold body so the offline server-mismatch banner sits
 /// below the app bar (inside the Scaffold), not floating over the status bar.
-Widget _libraryBody(Widget body) => Column(
+Widget _libraryBody(WidgetRef ref, Widget body) => Column(
   children: [
-    const ServerUnreachableBanner(),
+    ServerUnreachableBanner(
+      onRetry: () => ref.invalidate(categoryControllerProvider),
+    ),
     const OfflineServerMismatchBanner(),
     Expanded(child: body),
   ],
@@ -349,6 +351,7 @@ class _DefaultLibraryToggledSearch extends HookConsumerWidget {
                 child: LibraryMangaOrganizer(),
               ),
               body: _libraryBody(
+                ref,
                 _groupedBody(
                   useTabs: useTabs,
                   sections: _categorySections(data),
@@ -384,7 +387,7 @@ class _DefaultLibraryToggledSearch extends HookConsumerWidget {
       },
       wrapper: (body) => Scaffold(
         appBar: AppBar(title: Text(context.l10n.library)),
-        body: _libraryBody(body),
+        body: _libraryBody(ref, body),
       ),
     );
   }
@@ -515,6 +518,7 @@ class _DefaultLibraryStickySearch extends HookConsumerWidget {
                   context: context,
                   removeTop: true,
                   child: _libraryBody(
+                    ref,
                     _groupedBody(
                       useTabs: useTabs,
                       sections: _categorySections(data),
@@ -552,7 +556,7 @@ class _DefaultLibraryStickySearch extends HookConsumerWidget {
       },
       wrapper: (body) => Scaffold(
         appBar: AppBar(title: Text(context.l10n.library)),
-        body: _libraryBody(body),
+        body: _libraryBody(ref, body),
       ),
     );
   }
@@ -687,6 +691,7 @@ class _GroupedLibraryToggledSearch extends HookConsumerWidget {
               child: LibraryMangaOrganizer(),
             ),
             body: _libraryBody(
+                ref,
               _groupedBody(
                 useTabs: useTabs,
                 sections: _groupSections(tabs),
@@ -723,7 +728,7 @@ class _GroupedLibraryToggledSearch extends HookConsumerWidget {
       skipLoadingOnReload: true,
       wrapper: (body) => Scaffold(
         appBar: AppBar(title: Text(context.l10n.library)),
-        body: _libraryBody(body),
+        body: _libraryBody(ref, body),
       ),
     );
   }
@@ -834,6 +839,7 @@ class _GroupedLibraryStickySearch extends HookConsumerWidget {
                   context: context,
                   removeTop: true,
                   child: _libraryBody(
+                    ref,
                     _groupedBody(
                       useTabs: useTabs,
                       sections: _groupSections(tabs),
@@ -873,7 +879,7 @@ class _GroupedLibraryStickySearch extends HookConsumerWidget {
       skipLoadingOnReload: true,
       wrapper: (body) => Scaffold(
         appBar: AppBar(title: Text(context.l10n.library)),
-        body: _libraryBody(body),
+        body: _libraryBody(ref, body),
       ),
     );
   }
