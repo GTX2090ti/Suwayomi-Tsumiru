@@ -184,7 +184,7 @@ Future<bool> runCatchupDownloads({
           continue;
         }
 
-        final staged = await _downloadOneChapter(
+        final attempt = await _downloadOneChapter(
           target: target,
           record: record,
           broker: broker,
@@ -195,13 +195,13 @@ Future<bool> runCatchupDownloads({
           mangaId: mangaId,
           generation: mangaSpec.generationOf(chapterId),
         );
-        if (staged > 0) {
+        if (attempt.bytes > 0) {
           downloaded++;
-          runBytes += staged;
+          runBytes += attempt.bytes;
           pending.remove(chapterId);
           serverFetch.remove(chapterId);
           retries.remove(chapterId);
-        } else {
+        } else if (!attempt.transient) {
           retries[chapterId] = spent + 1;
         }
       }
@@ -356,7 +356,13 @@ Future<bool> _enqueueServerDownload(
 /// check the row the way a commit must. It fills staging and leaves an adoption
 /// record; the next launch commits it on the main isolate. Timing is unchanged
 /// for the user: adoption already happened at replay.
-Future<int> _downloadOneChapter({
+/// Whether an attempt failed because the chapter cannot be served, or merely
+/// because the server was not there at the time. Only the first is worth
+/// spending an attempt on — an outage would otherwise abandon the chapter for
+/// good after a few nights.
+typedef ChapterAttempt = ({int bytes, bool transient});
+
+Future<ChapterAttempt> _downloadOneChapter({
   required BackgroundServerTarget target,
   required BackgroundTokenRecord Function() record,
   required TokenBroker broker,
@@ -373,7 +379,10 @@ Future<int> _downloadOneChapter({
     broker: broker,
     chapterId: row.id,
   );
-  if (urls == null || urls.isEmpty) return 0;
+  // null: server unreachable. empty: it answered, and has no pages for this
+  // chapter.
+  if (urls == null) return (bytes: 0, transient: true);
+  if (urls.isEmpty) return (bytes: 0, transient: false);
 
   final indices = [for (var i = 0; i < urls.length; i++) i];
   // The generation comes from the spec, not a hardcoded 0: a chapter that was
@@ -417,7 +426,9 @@ Future<int> _downloadOneChapter({
     isCancelled: () => false,
     onPageStored: (_, __, ___) async {},
   );
-  if (!outcome.succeeded) return 0;
+  if (!outcome.succeeded) {
+    return (bytes: 0, transient: outcome.offline || outcome.authFailed);
+  }
 
   // Measured off staging rather than this run's writes: a resumed chapter
   // fetched only what was missing, and the ledger's cap accounting wants the
@@ -436,5 +447,5 @@ Future<int> _downloadOneChapter({
       isRead: row.isRead,
     ),
   );
-  return bytes;
+  return (bytes: bytes, transient: false);
 }
