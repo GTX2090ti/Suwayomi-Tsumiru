@@ -1,4 +1,6 @@
+import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
+import 'package:gql/ast.dart';
 import 'package:graphql/client.dart';
 
 import 'logger.dart';
@@ -39,13 +41,21 @@ class LoggerLink extends Link {
   @override
   Stream<Response> request(Request request, [NextLink? forward]) {
     if (kDebugMode) {
-      final name = request.operation.operationName ?? 'unnamed';
+      // operationName is null for these requests, so read it off the document:
+      // the generated operations carry their name on the definition node.
+      final name =
+          request.operation.operationName ??
+          request.operation.document.definitions
+              .whereType<OperationDefinitionNode>()
+              .firstOrNull
+              ?.name
+              ?.value ??
+          'unnamed';
       GraphQLRequestStats.record(name);
-      // Every 25th request, dump the tally — frequent enough to watch live in
-      // logcat without a line per call drowning everything else out.
-      if (GraphQLRequestStats.total % 25 == 0) {
-        logger.i(GraphQLRequestStats.report());
-      }
+      // One line per request: a periodic summary silently reports nothing at
+      // all when a session lands under the threshold, and counting these
+      // afterwards is what the measurement is for.
+      logger.i('GQL#${GraphQLRequestStats.total} $name');
     }
     Stream<Response> response = forward!(request)
         .map((Response fetchResult) => fetchResult)

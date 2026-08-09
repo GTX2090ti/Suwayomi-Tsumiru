@@ -188,20 +188,20 @@ GraphQLClient graphQlClient(Ref ref) {
 GraphQLClient graphQlSubscriptionClient(Ref ref) {
   final authType = ref.watch(authTypeKeyProvider) ?? DBKeys.authType.initial;
   final credentials = ref.watch(credentialsProvider).value;
-  // Watch ONLY the socket-relevant auth material (cookie + token raw strings)
-  // so this client is rebuilt — and the socket reconnects with fresh auth — on
-  // a re-login or token/cookie refresh. Reading it once (the old behaviour) left
-  // the connection pinned to the auth captured at first connect, so after a
-  // refresh the @requireAuth subscriptions (downloads + library-update feeds)
-  // silently died. Selecting the two raw strings (not the whole credentials
-  // object) avoids tearing the socket down on unrelated writes — e.g. a login
-  // also writes the saved password, which would otherwise reconnect twice.
-  final socketAuth = ref.watch(authCredentialsStoreProvider.select(
-    (s) => (
-      cookie: s.value?.simpleLoginCookie,
-      token: s.value?.uiAccessToken,
-    ),
-  ));
+  // Watch ONLY what the connection captures at BUILD time: the simple-login
+  // cookie, which goes in the handshake headers and so is pinned for the life
+  // of the socket.
+  //
+  // The ui_login token is deliberately NOT watched. It is read lazily inside
+  // `initialPayload` below, on each connect, so a refreshed token is picked up
+  // without rebuilding anything. Watching it rebuilt this provider on every
+  // refresh, tearing the socket down and reconnecting — which drops every live
+  // subscription, and the update banner then falls back to one-shot polling to
+  // cover the gap. Measured: 4 refreshes in two minutes of ordinary use
+  // produced 19 fallback queries.
+  final socketCookie = ref.watch(
+    authCredentialsStoreProvider.select((s) => s.value?.simpleLoginCookie),
+  );
   final wsUrl = Endpoints.baseApi(
     baseUrl: ref.watch(serverUrlProvider) ?? DBKeys.serverUrl.initial,
     port: ref.watch(serverPortProvider),
@@ -233,7 +233,7 @@ GraphQLClient graphQlSubscriptionClient(Ref ref) {
           : <String, dynamic>{'Authorization': token};
     };
   } else if (authType == AuthType.simpleLogin) {
-    final cookie = socketAuth.cookie;
+    final cookie = socketCookie;
     handshakeHeaders =
         (cookie == null || cookie.isEmpty) ? null : {'Cookie': cookie};
   } else if (authType == AuthType.basic && credentials.isNotBlank) {
