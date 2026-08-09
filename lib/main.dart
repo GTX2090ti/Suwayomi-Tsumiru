@@ -51,6 +51,7 @@ import 'src/utils/crash/redact_tokens.dart';
 import 'src/utils/desktop/desktop_window.dart';
 import 'src/utils/hive/graphql_cache_guard.dart';
 import 'src/utils/misc/toast/toast.dart';
+import 'src/utils/network/graphql_errors.dart';
 import 'src/utils/soft_clear_image_cache.dart';
 import 'src/utils/platform/is_android_native.dart';
 import 'src/widgets/app_error_app.dart';
@@ -103,8 +104,10 @@ Future<void> _startApp() async {
     Workmanager().initialize(notificationCallbackDispatcher);
   }
   final packageInfo = await PackageInfo.fromPlatform();
-  _logBoot('start v${packageInfo.version}+${packageInfo.buildNumber} '
-      '(${defaultTargetPlatform.name})');
+  _logBoot(
+    'start v${packageInfo.version}+${packageInfo.buildNumber} '
+    '(${defaultTargetPlatform.name})',
+  );
   final sharedPreferences = await SharedPreferences.getInstance();
   // Desktop: hide the OS title bar + restore saved window size before first
   // frame. No-op on web/mobile.
@@ -136,6 +139,13 @@ Future<void> _startApp() async {
   // providers before the first frame. Using UncontrolledProviderScope below
   // ensures the widget tree uses this same container instance.
   final container = ProviderContainer(
+    // Riverpod retries a failed provider 10 times (200ms→6.4s), so an
+    // unreachable server costs ~45s of doomed requests per provider on screen
+    // before the offline UI appears. A connection failure won't fix itself
+    // inside that window, and the offline fallback is already the answer.
+    retry: (retryCount, error) => isConnectionError(error)
+        ? null
+        : ProviderContainer.defaultRetry(retryCount, error),
     overrides: [
       packageInfoProvider.overrideWithValue(packageInfo),
       sharedPreferencesProvider.overrideWithValue(sharedPreferences),
@@ -182,7 +192,9 @@ Future<void> _startApp() async {
     if (sharedPreferences.getBool('onboardingComplete') == null) {
       final url = sharedPreferences.getString('serverUrl');
       await sharedPreferences.setBool(
-          'onboardingComplete', serverConfiguredForOnboarding(url));
+        'onboardingComplete',
+        serverConfiguredForOnboarding(url),
+      );
     }
   } catch (e, st) {
     debugPrint('onboarding migration failed: $e\n$st');
@@ -221,7 +233,9 @@ Future<void> _startApp() async {
     const migratedKey = 'requestTimeout30sMigrated';
     if (sharedPreferences.getBool(migratedKey) != true) {
       await sharedPreferences.setInt(
-          'serverRequestTimeout', TimeoutConstants.requestTimeoutDefaultMs);
+        'serverRequestTimeout',
+        TimeoutConstants.requestTimeoutDefaultMs,
+      );
       await sharedPreferences.setBool('autoRefreshOnTimeout', true);
       await sharedPreferences.setBool(migratedKey, true);
     }
@@ -283,97 +297,108 @@ Future<void> _startApp() async {
     // missing), then resume the download queue: chapters stranded `downloading`
     // by the last exit and previously-errored ones are retried, one at a time,
     // re-fetching only pages not already on disk. Fire-and-forget; native only.
-    unawaited(Future(() async {
-      try {
-        await container.read(serverInstanceIdProvider.future);
-      } catch (_) {
-        return;
-      }
-      // Drain any bulk-migration journal left by a mid-batch crash. Independent
-      // of the offline feature, so it runs before that guard.
-      await recoverBulkMigrationsAtLaunch(container);
-      // Reconcile the notification schedule + write the worker's endpoint-bound
-      // config now that auth is ready. Best-effort — never blocks launch.
-      try {
-        await container.read(notificationsControllerProvider).sync();
-      } catch (_) {}
-      // Push queued progress the moment the server comes back, not just on
-      // next cold launch. Registered before the offline gate: the flush no-ops
-      // while inactive and the catalog can activate later in the session. A
-      // transition landing mid-flush queues one re-run, so rows dirtied after
-      // the snapshot aren't stranded with no later transition to catch them.
-      var flushing = false;
-      var rerun = false;
-      void flush() {
-        if (flushing) {
-          rerun = true;
+    unawaited(
+      Future(() async {
+        try {
+          await container.read(serverInstanceIdProvider.future);
+        } catch (_) {
           return;
         }
-        flushing = true;
-        unawaited(pushPendingProgress(container).catchError((Object e) {
-          debugPrint('reconnect progress flush failed: $e');
-        }).whenComplete(() {
-          flushing = false;
-          if (rerun) {
-            rerun = false;
-            flush();
-          }
-        }));
-        // Desktop pump parks while offline; reconnect restarts it. (No-op on
-        // Android — the worker owns downloads there.)
-        final coordinator = container.read(offlineDownloadCoordinatorProvider);
-        if (coordinator != null) unawaited(coordinator.pumpDownloads());
-      }
-
-      container.listen<bool>(serverUnreachableProvider, (prev, next) {
-        if (prev == true && !next) flush();
-      });
-      if (!container.read(offlineActiveProvider)) return;
-      // Replay FIRST: launch reconcile and the catch-up must see post-replay
-      // device state, or overnight background downloads read as missing and
-      // get re-fetched. The service restart stays after reconcile below.
-      if (isAndroidNative) {
-        final controller = container.read(backgroundDownloadControllerProvider);
-        controller.register();
-        await controller.replayAtLaunch();
-      }
-      await pushPendingProgress(container);
-      await reconcileAllAtLaunch(container);
-      // New-chapter catch-up for keep-rule manga (#310): launch pass now, then
-      // re-runs when an update finishes or the server download queue drains.
-      initChapterCatchUp(container);
-      // Snapshot the background worker's planning state whenever the app
-      // leaves the foreground — the binding keeps the listener alive.
-      AppLifecycleListener(
-        onPause: () => unawaited(writeCatchupWorkSpec(container.read)),
-        onHide: () => unawaited(writeCatchupWorkSpec(container.read)),
-      );
-      // One-time sweep of phantom (browsed-not-added) catalog entries.
-      if (sharedPreferences.getBool('offlinePhantomCleanupDone') != true) {
+        // Drain any bulk-migration journal left by a mid-batch crash. Independent
+        // of the offline feature, so it runs before that guard.
+        await recoverBulkMigrationsAtLaunch(container);
+        // Reconcile the notification schedule + write the worker's endpoint-bound
+        // config now that auth is ready. Best-effort — never blocks launch.
         try {
-          await container.read(offlineDatabaseProvider).purgeNonLibraryManga();
-          await sharedPreferences.setBool('offlinePhantomCleanupDone', true);
-        } catch (e, st) {
-          debugPrint('phantom cleanup failed: $e\n$st');
+          await container.read(notificationsControllerProvider).sync();
+        } catch (_) {}
+        // Push queued progress the moment the server comes back, not just on
+        // next cold launch. Registered before the offline gate: the flush no-ops
+        // while inactive and the catalog can activate later in the session. A
+        // transition landing mid-flush queues one re-run, so rows dirtied after
+        // the snapshot aren't stranded with no later transition to catch them.
+        var flushing = false;
+        var rerun = false;
+        void flush() {
+          if (flushing) {
+            rerun = true;
+            return;
+          }
+          flushing = true;
+          unawaited(
+            pushPendingProgress(container)
+                .catchError((Object e) {
+                  debugPrint('reconnect progress flush failed: $e');
+                })
+                .whenComplete(() {
+                  flushing = false;
+                  if (rerun) {
+                    rerun = false;
+                    flush();
+                  }
+                }),
+          );
+          // Desktop pump parks while offline; reconnect restarts it. (No-op on
+          // Android — the worker owns downloads there.)
+          final coordinator = container.read(
+            offlineDownloadCoordinatorProvider,
+          );
+          if (coordinator != null) unawaited(coordinator.pumpDownloads());
         }
-      }
-      if (isAndroidNative) {
-        // Replay already ran above (before reconcile); restart the service if
-        // the queue is non-empty.
-        final controller = container.read(backgroundDownloadControllerProvider);
-        await controller.maybeStartAfterReplay();
-      } else {
-        await initOfflineDownloads(container);
-      }
-    }));
+
+        container.listen<bool>(serverUnreachableProvider, (prev, next) {
+          if (prev == true && !next) flush();
+        });
+        if (!container.read(offlineActiveProvider)) return;
+        // Replay FIRST: launch reconcile and the catch-up must see post-replay
+        // device state, or overnight background downloads read as missing and
+        // get re-fetched. The service restart stays after reconcile below.
+        if (isAndroidNative) {
+          final controller = container.read(
+            backgroundDownloadControllerProvider,
+          );
+          controller.register();
+          await controller.replayAtLaunch();
+        }
+        await pushPendingProgress(container);
+        await reconcileAllAtLaunch(container);
+        // New-chapter catch-up for keep-rule manga (#310): launch pass now, then
+        // re-runs when an update finishes or the server download queue drains.
+        initChapterCatchUp(container);
+        // Snapshot the background worker's planning state whenever the app
+        // leaves the foreground — the binding keeps the listener alive.
+        AppLifecycleListener(
+          onPause: () => unawaited(writeCatchupWorkSpec(container.read)),
+          onHide: () => unawaited(writeCatchupWorkSpec(container.read)),
+        );
+        // One-time sweep of phantom (browsed-not-added) catalog entries.
+        if (sharedPreferences.getBool('offlinePhantomCleanupDone') != true) {
+          try {
+            await container
+                .read(offlineDatabaseProvider)
+                .purgeNonLibraryManga();
+            await sharedPreferences.setBool('offlinePhantomCleanupDone', true);
+          } catch (e, st) {
+            debugPrint('phantom cleanup failed: $e\n$st');
+          }
+        }
+        if (isAndroidNative) {
+          // Replay already ran above (before reconcile); restart the service if
+          // the queue is non-empty.
+          final controller = container.read(
+            backgroundDownloadControllerProvider,
+          );
+          await controller.maybeStartAfterReplay();
+        } else {
+          await initOfflineDownloads(container);
+        }
+      }),
+    );
   }
 
   _logBoot('runApp');
   runApp(
-    UncontrolledProviderScope(
-      container: container,
-      child: const Sorayomi(),
-    ),
+    UncontrolledProviderScope(container: container, child: const Sorayomi()),
   );
   // Mark the app as up once it has painted a frame. After this, a stray
   // uncaught async error is recoverable and must NOT replace the whole UI with
@@ -409,9 +434,9 @@ Future<void> _setUpCrashReporting() async {
     return true;
   };
   ErrorWidget.builder = (details) => AppErrorApp(
-        message: redactTokens(details.exceptionAsString()),
-        logPath: _crashLogPath,
-      );
+    message: redactTokens(details.exceptionAsString()),
+    logPath: _crashLogPath,
+  );
 }
 
 void _logCrash(Object error, StackTrace? stack) {
@@ -434,8 +459,12 @@ void _onFatalError(Object error, StackTrace stack) {
   // running app with a "couldn't start" screen.
   if (_appRendered) return;
   try {
-    runApp(AppErrorApp(
-        message: redactTokens(error.toString()), logPath: _crashLogPath));
+    runApp(
+      AppErrorApp(
+        message: redactTokens(error.toString()),
+        logPath: _crashLogPath,
+      ),
+    );
   } catch (_) {}
 }
 
@@ -456,10 +485,9 @@ void _setupDeepLinkListener(ProviderContainer container) {
       return;
     }
     try {
-      await container.read(trackerRepositoryProvider).loginOAuth(
-            trackerId: trackerId,
-            callbackUrl: uri.toString(),
-          );
+      await container
+          .read(trackerRepositoryProvider)
+          .loginOAuth(trackerId: trackerId, callbackUrl: uri.toString());
       container.invalidate(trackersProvider);
     } catch (e) {
       debugPrint('tracker-oauth loginOAuth failed: $e');
@@ -472,11 +500,14 @@ void _setupDeepLinkListener(ProviderContainer container) {
   }
 
   // Cold-start: the app was launched via a deep link.
-  appLinks.getInitialLink().then((uri) {
-    if (uri != null) unawaited(handleUri(uri));
-  }).catchError((e) {
-    debugPrint('AppLinks.getInitialLink error: $e');
-  });
+  appLinks
+      .getInitialLink()
+      .then((uri) {
+        if (uri != null) unawaited(handleUri(uri));
+      })
+      .catchError((e) {
+        debugPrint('AppLinks.getInitialLink error: $e');
+      });
 
   // Warm-start: the app was already running and received a deep link.
   appLinks.uriLinkStream.listen(
@@ -507,7 +538,9 @@ Future<void> _seedTestConfig(ProviderContainer container) async {
   }
 
   if (pass.isEmpty) return; // server set; user logs in manually if no password.
-  await container.read(authCoordinatorProvider.notifier).loginUi(
+  await container
+      .read(authCoordinatorProvider.notifier)
+      .loginUi(
         gqlClient: container.read(graphQlClientProvider),
         username: user,
         password: pass,

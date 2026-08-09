@@ -28,6 +28,11 @@ import 'catchup_work_spec.dart';
 const _maxChaptersPerRun = 10;
 const _runBudget = Duration(minutes: 7);
 
+/// Attempts a single chapter gets across runs before its obligation is dropped.
+/// Without this the ledger never converges: a chapter the server cannot serve
+/// stays pending and is retried on every scheduled wake, forever.
+const _maxChapterAttempts = 5;
+
 /// Download the ledger's obligations inside the WorkManager task. Returns
 /// false only on transient failure (scheduler retries).
 ///
@@ -149,7 +154,14 @@ Future<bool> runCatchupDownloads({
           // Two-hop: server first. Bounded retries; a dead source stops
           // burning the budget and surfaces via the foreground banner.
           final spent = retries[chapterId] ?? 0;
-          if (spent >= 5) continue;
+          if (spent >= _maxChapterAttempts) {
+            // Out of attempts: drop the obligation instead of carrying it
+            // forever. Left pending it is re-examined on every wake for the
+            // life of the install.
+            pending.remove(chapterId);
+            retries.remove(chapterId);
+            continue;
+          }
           final ok = await _enqueueServerDownload(target, record, chapterId);
           if (ok) {
             serverFetch[chapterId] = mangaId;
@@ -175,6 +187,18 @@ Future<bool> runCatchupDownloads({
           pending.remove(chapterId);
           serverFetch.remove(chapterId);
           retries.remove(chapterId);
+        } else {
+          // Nothing staged: the page list or the pages themselves failed. This
+          // hop had no attempt counter, so a chapter the server can never serve
+          // stayed an obligation and was retried on every scheduled wake for
+          // the life of the install.
+          final spent = (retries[chapterId] ?? 0) + 1;
+          if (spent >= _maxChapterAttempts) {
+            pending.remove(chapterId);
+            retries.remove(chapterId);
+          } else {
+            retries[chapterId] = spent;
+          }
         }
       }
 
