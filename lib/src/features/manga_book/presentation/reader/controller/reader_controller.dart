@@ -40,9 +40,19 @@ Future<ChapterPagesDto?> chapterPages(Ref ref, {required int chapterId}) async {
   // Offline: if this chapter is downloaded on-device, serve its pages from disk
   // (as file:// URIs that ServerImage renders locally) instead of the server.
   // Falls through to the network when not downloaded / offline is unavailable.
-  if (ref.watch(offlineReadDatabaseProvider) != null) {
-    final local =
+  final offlineDb = ref.watch(offlineReadDatabaseProvider);
+  if (offlineDb != null) {
+    var local =
         await ref.watch(offlineRepositoryProvider).localChapterPages(chapterId);
+    // A chapter that says `downloaded` but resolves to no pages would otherwise
+    // stream from the server on every read, and fail entirely offline. Heal it
+    // here rather than leaving the user to clear app data.
+    local ??= await repairDownloadedChapterPages(
+      db: offlineDb,
+      store: ref.watch(offlinePageStoreProvider),
+      paths: ref.watch(offlinePathsProvider),
+      chapterId: chapterId,
+    );
     if (local != null && local.isNotEmpty) {
       return ChapterPagesDto(
         chapter: ChapterPagesChapterDto(id: chapterId, pageCount: local.length),

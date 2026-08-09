@@ -9,6 +9,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../../constants/db_keys.dart';
+import '../../../utils/logger/logger.dart';
 import '../../manga_book/data/manga_book/manga_book_repository.dart';
 import '../../../global_providers/global_providers.dart';
 import 'offline_database.dart';
@@ -154,6 +155,54 @@ OfflineRepository offlineRepository(Ref ref) => OfflineRepository(
       db: ref.watch(offlineDatabaseProvider),
       paths: ref.watch(offlinePathsProvider),
     );
+
+/// Repairs a chapter that claims to be downloaded but has no page rows, and
+/// returns its page paths when it could be healed.
+///
+/// That state reads as local and resolves to nothing, so the reader streams
+/// every page from the server while telling the user the chapter is on-device —
+/// which also fails outright when they have no connection. The files are
+/// usually still on disk, so rebuilding the rows from the committed directory
+/// costs nothing; when the manifest can't vouch for them, re-queue instead of
+/// leaving a chapter that lies about being local.
+Future<List<String>?> repairDownloadedChapterPages({
+  required OfflineDatabase db,
+  required OfflinePageStore store,
+  required OfflinePaths paths,
+  required int chapterId,
+}) async {
+  final ch = await db.chapterById(chapterId);
+  if (ch == null || ch.deviceState != OfflineDeviceState.downloaded) return null;
+
+  final committed = await store.committedPages(ch.mangaId, chapterId);
+  if (committed.isEmpty) {
+    logger.w(
+      'Offline: chapter $chapterId claims downloaded with no pages on disk, '
+      're-queueing',
+    );
+    await db.transaction(() async {
+      await (db.delete(
+        db.offlinePages,
+      )..where((t) => t.chapterId.equals(chapterId))).go();
+      await db.setChapterDeviceState(
+        chapterId,
+        OfflineDeviceState.queued,
+        bytes: 0,
+      );
+    });
+    return null;
+  }
+
+  logger.i(
+    'Offline: rebuilt ${committed.length} page rows for chapter $chapterId',
+  );
+  await db.commitDownloadedChapter(
+    chapterId: chapterId,
+    pages: committed,
+    downloadedAt: ch.downloadedAt ?? DateTime.now(),
+  );
+  return [for (final p in committed) paths.absolute(p.relPath)];
+}
 
 /// Whether on-device offline storage is available. Defaults to false and is
 /// overridden to true at startup when the catalog opened (native platforms).
