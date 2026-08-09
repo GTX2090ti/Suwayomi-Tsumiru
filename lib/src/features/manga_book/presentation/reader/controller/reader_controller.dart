@@ -44,9 +44,8 @@ Future<ChapterPagesDto?> chapterPages(Ref ref, {required int chapterId}) async {
   if (offlineDb != null) {
     var local =
         await ref.watch(offlineRepositoryProvider).localChapterPages(chapterId);
-    // A chapter that says `downloaded` but resolves to no pages would otherwise
-    // stream from the server on every read, and fail entirely offline. Heal it
-    // here rather than leaving the user to clear app data.
+    // Otherwise this streams from the server on every read, and fails
+    // entirely offline.
     local ??= await repairDownloadedChapterPages(
       db: offlineDb,
       store: ref.watch(offlinePageStoreProvider),

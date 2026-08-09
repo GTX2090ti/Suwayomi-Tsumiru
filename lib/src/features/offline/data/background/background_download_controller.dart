@@ -460,9 +460,8 @@ class BackgroundDownloadController with WidgetsBindingObserver {
     }
   }
 
-  /// Says why the queue stopped. The foreground service owns the download
-  /// notification, so stopping it removes the only on-screen explanation —
-  /// without this, downloads appear to stop for no reason.
+  /// Says why the queue stopped: the service owns the download notification,
+  /// so stopping it takes the only on-screen explanation with it.
   Future<void> _notifyPaused(_PauseReason reason) async {
     if (!_ref.read(notificationsDownloadsEnabledProvider).ifNull(true)) return;
     try {
@@ -678,16 +677,12 @@ class BackgroundDownloadController with WidgetsBindingObserver {
             'Offline: dropped to metered with Wi-Fi-only — stopping FGS',
           );
           await FlutterForegroundTask.stopService();
-          // The service owns the download notification, so stopping it takes
-          // the only on-screen explanation with it — downloads would appear to
-          // stop for no reason.
           await _notifyPaused(_PauseReason.wifi);
         }
         return;
       }
-      // The link went away entirely. Only the Wi-Fi-only case used to stop the
-      // service, so with that setting off the worker kept running against a
-      // network that was gone — every queued chapter discovering it separately.
+      // Only the Wi-Fi-only case used to stop the service, so with that off
+      // the worker kept running against a network that was gone.
       if (!hasConnection) {
         if (await FlutterForegroundTask.isRunningService) {
           logger.i('Offline: no connection — stopping FGS');

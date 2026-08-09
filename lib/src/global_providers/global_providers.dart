@@ -145,12 +145,8 @@ GraphQLClient graphQlClient(Ref ref) {
       }
       return response;
     }).handleError((Object error) {
-      // The inverse: a request that never reached the server marks it
-      // unreachable for the whole app. Only the downloader used to set this,
-      // so every other caller kept trying — and each one paid its own retries
-      // discovering the same thing. Reachability of the configured server is
-      // the right authority here, not whether the internet works: a LAN-only
-      // Suwayomi is perfectly reachable with no uplink at all.
+      // The inverse. Only the downloader used to set this, so everything else
+      // kept paying its own retries to discover the same thing.
       if (isConnectionError(error)) {
         Future(() {
           try {
@@ -188,17 +184,9 @@ GraphQLClient graphQlClient(Ref ref) {
 GraphQLClient graphQlSubscriptionClient(Ref ref) {
   final authType = ref.watch(authTypeKeyProvider) ?? DBKeys.authType.initial;
   final credentials = ref.watch(credentialsProvider).value;
-  // Watch ONLY what the connection captures at BUILD time: the simple-login
-  // cookie, which goes in the handshake headers and so is pinned for the life
-  // of the socket.
-  //
-  // The ui_login token is deliberately NOT watched. It is read lazily inside
-  // `initialPayload` below, on each connect, so a refreshed token is picked up
-  // without rebuilding anything. Watching it rebuilt this provider on every
-  // refresh, tearing the socket down and reconnecting — which drops every live
-  // subscription, and the update banner then falls back to one-shot polling to
-  // cover the gap. Measured: 4 refreshes in two minutes of ordinary use
-  // produced 19 fallback queries.
+  // Only the cookie: it's pinned into the handshake at build time. The
+  // ui_login token is read per-connect in initialPayload, so watching it just
+  // rebuilt the socket on every refresh and killed the live subscriptions.
   final socketCookie = ref.watch(
     authCredentialsStoreProvider.select((s) => s.value?.simpleLoginCookie),
   );

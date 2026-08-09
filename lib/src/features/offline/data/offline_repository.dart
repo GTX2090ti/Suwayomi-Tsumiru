@@ -156,15 +156,10 @@ OfflineRepository offlineRepository(Ref ref) => OfflineRepository(
       paths: ref.watch(offlinePathsProvider),
     );
 
-/// Repairs a chapter that claims to be downloaded but has no page rows, and
-/// returns its page paths when it could be healed.
-///
-/// That state reads as local and resolves to nothing, so the reader streams
-/// every page from the server while telling the user the chapter is on-device —
-/// which also fails outright when they have no connection. The files are
-/// usually still on disk, so rebuilding the rows from the committed directory
-/// costs nothing; when the manifest can't vouch for them, re-queue instead of
-/// leaving a chapter that lies about being local.
+/// Repairs a chapter that claims to be downloaded but has no page rows,
+/// returning its page paths when it healed. The files are usually still on
+/// disk, so rebuilding the rows costs nothing; when the manifest can't vouch
+/// for them, re-queue rather than leave a chapter lying about being local.
 Future<List<String>?> repairDownloadedChapterPages({
   required OfflineDatabase db,
   required OfflinePageStore store,

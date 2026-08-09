@@ -139,10 +139,9 @@ Future<void> _startApp() async {
   // providers before the first frame. Using UncontrolledProviderScope below
   // ensures the widget tree uses this same container instance.
   final container = ProviderContainer(
-    // Riverpod retries a failed provider 10 times (200ms→6.4s), so an
-    // unreachable server costs ~45s of doomed requests per provider on screen
-    // before the offline UI appears. A connection failure won't fix itself
-    // inside that window, and the offline fallback is already the answer.
+    // Riverpod's 10 retries cost ~45s of doomed requests per on-screen
+    // provider before the offline UI appears, and a dead connection won't
+    // recover inside that window.
     retry: (retryCount, error) => isConnectionError(error)
         ? null
         : ProviderContainer.defaultRetry(retryCount, error),

@@ -52,9 +52,6 @@ class LoggerLink extends Link {
               ?.value ??
           'unnamed';
       GraphQLRequestStats.record(name);
-      // One line per request: a periodic summary silently reports nothing at
-      // all when a session lands under the threshold, and counting these
-      // afterwards is what the measurement is for.
       logger.i('GQL#${GraphQLRequestStats.total} $name');
     }
     Stream<Response> response = forward!(request)

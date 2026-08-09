@@ -728,11 +728,9 @@ class OfflineDatabase extends _$OfflineDatabase {
     required List<({int pageIndex, String relPath, int bytes})> pages,
     required DateTime downloadedAt,
   }) async {
-    // A `downloaded` chapter with no page rows reads as local but resolves to
-    // nothing, so the reader silently streams every page from the server
-    // forever. committedPages returns [] for a missing or torn manifest, so one
-    // bad manifest is enough to mint it. Leave the chapter not-downloaded and
-    // let the normal path re-fetch instead.
+    // Downloaded-with-no-pages reads as local but resolves to nothing, so the
+    // reader streams every page from the server instead. A torn manifest is
+    // enough to produce it, via committedPages returning [].
     if (pages.isEmpty) {
       logger.w(
         'Offline: refusing to mark chapter $chapterId downloaded with no pages',

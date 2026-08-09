@@ -124,10 +124,9 @@ class OfflineReconciler {
       }
       // Already on device — nothing to do.
       if (c.deviceState == OfflineDeviceState.downloaded) continue;
-      // Gave up for a reason retrying won't fix. Planning it every pass is what
-      // let one unfetchable chapter keep a device and a server busy forever.
-      // A genuine network failure parks as `downloading`, not `error`, so this
-      // doesn't strand anything a reconnect should resume.
+      // Re-planning a failed chapter every pass is what let one unfetchable
+      // chapter keep a device and a server busy forever. Network failures park
+      // as `downloading`, so nothing a reconnect should resume is stranded.
       if (c.deviceState == OfflineDeviceState.error) continue;
 
       if (nets.storageCapEnabled) {

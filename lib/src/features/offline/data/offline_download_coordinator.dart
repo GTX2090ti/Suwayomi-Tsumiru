@@ -191,9 +191,7 @@ class OfflineDownloadCoordinator {
           c.deviceState == OfflineDeviceState.queued) {
         return;
       }
-      // `error` is terminal — only an explicit user retry leaves it, via
-      // retryChapterDownload. Automatic callers (reconcile, catch-up) must not
-      // resurrect a chapter that already failed for a non-transient reason.
+      // Terminal: only an explicit user retry may revive a failed chapter.
       if (c.deviceState == OfflineDeviceState.error && !allowErrored) return;
       await db.setChapterDeviceState(chapterId, OfflineDeviceState.queued);
     });

@@ -188,10 +188,8 @@ Future<bool> runCatchupDownloads({
           serverFetch.remove(chapterId);
           retries.remove(chapterId);
         } else {
-          // Nothing staged: the page list or the pages themselves failed. This
-          // hop had no attempt counter, so a chapter the server can never serve
-          // stayed an obligation and was retried on every scheduled wake for
-          // the life of the install.
+          // This hop had no attempt counter, so a chapter the server can never
+          // serve stayed an obligation and was retried on every wake.
           final spent = (retries[chapterId] ?? 0) + 1;
           if (spent >= _maxChapterAttempts) {
             pending.remove(chapterId);

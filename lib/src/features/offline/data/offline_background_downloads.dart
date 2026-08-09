@@ -141,9 +141,7 @@ Future<void> initOfflineDownloads(ProviderContainer container) async {
     db: db,
     store: container.read(offlinePageStoreProvider),
   );
-  // `error` is terminal and is NOT requeued here. This used to promote every
-  // errored chapter on every launch, so a chapter the server can never serve
-  // was retried forever — one of them is enough to keep a device and a server
-  // busy indefinitely. The user retries from the chapter's save button.
+  // `error` is terminal: this used to promote every errored chapter on each
+  // launch, retrying forever. The user retries from the save button.
   await coord.pumpDownloads();
 }
