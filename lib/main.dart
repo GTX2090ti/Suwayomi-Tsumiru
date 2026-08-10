@@ -298,24 +298,19 @@ Future<void> _startApp() async {
     // re-fetching only pages not already on disk. Fire-and-forget; native only.
     unawaited(
       Future(() async {
-        try {
-          await container.read(serverInstanceIdProvider.future);
-        } catch (_) {
-          return;
-        }
-        // Drain any bulk-migration journal left by a mid-batch crash. Independent
-        // of the offline feature, so it runs before that guard.
-        await recoverBulkMigrationsAtLaunch(container);
-        // Reconcile the notification schedule + write the worker's endpoint-bound
-        // config now that auth is ready. Best-effort — never blocks launch.
-        try {
-          await container.read(notificationsControllerProvider).sync();
-        } catch (_) {}
         // Push queued progress the moment the server comes back, not just on
-        // next cold launch. Registered before the offline gate: the flush no-ops
-        // while inactive and the catalog can activate later in the session. A
-        // transition landing mid-flush queues one re-run, so rows dirtied after
-        // the snapshot aren't stranded with no later transition to catch them.
+        // next cold launch.
+        //
+        // Registered ahead of BOTH gates below. The server-id probe returns
+        // early when the server is unreachable at launch, which is exactly when
+        // this listener matters — leaving it after meant a session started
+        // offline never resumed anything for its whole life. The offline gate
+        // is the same story: the flush no-ops while inactive, and the catalog
+        // can activate later in the session.
+        //
+        // A transition landing mid-flush queues one re-run, so rows dirtied
+        // after the snapshot aren't stranded with no later transition to catch
+        // them.
         var flushing = false;
         var rerun = false;
         void flush() {
@@ -358,6 +353,20 @@ Future<void> _startApp() async {
         container.listen<bool>(serverUnreachableProvider, (prev, next) {
           if (prev == true && !next) flush();
         });
+
+        try {
+          await container.read(serverInstanceIdProvider.future);
+        } catch (_) {
+          return;
+        }
+        // Drain any bulk-migration journal left by a mid-batch crash. Independent
+        // of the offline feature, so it runs before that guard.
+        await recoverBulkMigrationsAtLaunch(container);
+        // Reconcile the notification schedule + write the worker's endpoint-bound
+        // config now that auth is ready. Best-effort — never blocks launch.
+        try {
+          await container.read(notificationsControllerProvider).sync();
+        } catch (_) {}
         if (!container.read(offlineActiveProvider)) return;
         // Replay FIRST: launch reconcile and the catch-up must see post-replay
         // device state, or overnight background downloads read as missing and
