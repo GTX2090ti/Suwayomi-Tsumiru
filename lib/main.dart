@@ -298,6 +298,15 @@ Future<void> _startApp() async {
     // re-fetching only pages not already on disk. Fire-and-forget; native only.
     unawaited(
       Future(() async {
+        // Wire the worker's event callback before anything can start the
+        // service — the reconnect listener below can, and a service running
+        // with no callback finishes chapters nobody applies to the catalog
+        // until a later launch replays the log. Idempotent, and independent of
+        // both the server and the catalog, so it belongs ahead of both gates.
+        if (isAndroidNative) {
+          container.read(backgroundDownloadControllerProvider).register();
+        }
+
         // Push queued progress the moment the server comes back, not just on
         // next cold launch.
         //
@@ -372,11 +381,10 @@ Future<void> _startApp() async {
         // device state, or overnight background downloads read as missing and
         // get re-fetched. The service restart stays after reconcile below.
         if (isAndroidNative) {
-          final controller = container.read(
-            backgroundDownloadControllerProvider,
-          );
-          controller.register();
-          await controller.replayAtLaunch();
+          // register() already ran above; this is the catalog-dependent half.
+          await container
+              .read(backgroundDownloadControllerProvider)
+              .replayAtLaunch();
         }
         await pushPendingProgress(container);
         await reconcileAllAtLaunch(container);
