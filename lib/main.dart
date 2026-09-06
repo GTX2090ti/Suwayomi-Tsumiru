@@ -199,6 +199,22 @@ Future<void> _startApp() async {
     debugPrint('onboarding migration failed: $e\n$st');
   }
 
+  // 3.1) Split the legacy single endpoint into the configured remote URL and
+  // the active endpoint. This must happen before the LAN resolver can replace
+  // `serverUrl`, otherwise the original remote address would be lost on the
+  // next launch.
+  try {
+    const externalKey = 'serverExternalUrl';
+    if (sharedPreferences.getString(externalKey) == null) {
+      final legacyUrl = sharedPreferences.getString('serverUrl');
+      if (legacyUrl != null) {
+        await sharedPreferences.setString(externalKey, legacyUrl);
+      }
+    }
+  } catch (e, st) {
+    debugPrint('server URL split migration failed: $e\n$st');
+  }
+
   // 3.5) One-time: the Last-Read sort comparator was un-inverted so its
   //    ascending/descending is now ascending = oldest-read first.
   //    A user whose CURRENT sort is Last-Read and who had an explicit direction
@@ -287,6 +303,10 @@ Future<void> _startApp() async {
     debugPrint('test-config seed failed: $e\n$st');
   }
 
+  // Select the LAN URL when it is reachable, otherwise retain the remote URL;
+  // the resolver also listens for later Wi-Fi/mobile network changes.
+  container.read(serverEndpointResolverProvider.notifier);
+
   _setupDeepLinkListener(container);
 
   // 7) Sweep any chapter left mid-download by a prior crash/kill back to a
@@ -305,6 +325,15 @@ Future<void> _startApp() async {
         // both the server and the catalog, so it belongs ahead of both gates.
         if (isAndroidNative) {
           container.read(backgroundDownloadControllerProvider).register();
+          container.listen<String?>(serverUrlProvider, (previous, next) {
+            if (previous != null && previous != next) {
+              unawaited(
+                container
+                    .read(backgroundDownloadControllerProvider)
+                    .restartForEndpointChange(),
+              );
+            }
+          });
         }
 
         // Push queued progress the moment the server comes back, not just on
@@ -553,7 +582,7 @@ Future<void> _seedTestConfig(ProviderContainer container) async {
   const user = String.fromEnvironment('TEST_USER');
   const pass = String.fromEnvironment('TEST_PASS');
 
-  container.read(serverUrlProvider.notifier).update(url);
+  container.read(serverExternalUrlProvider.notifier).update(url);
   if (url.startsWith('https')) {
     // Reverse-proxied https servers need no extra port appended.
     container.read(serverPortToggleProvider.notifier).update(false);
