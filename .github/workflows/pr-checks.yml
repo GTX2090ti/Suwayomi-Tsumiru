@@ -32,7 +32,9 @@ jobs:
       - uses: actions/setup-java@v5
         with:
           distribution: zulu
-          java-version: "17"
+          # AGP 9 lint calls Java 21 APIs; on 17 it dies with
+          # NoSuchMethodError while analysing plugin sources.
+          java-version: "21"
       - uses: subosito/flutter-action@v2
         with:
           flutter-version-file: .fvmrc
@@ -41,3 +43,10 @@ jobs:
       - run: flutter gen-l10n
       - run: dart run build_runner build --delete-conflicting-outputs
       - run: flutter build apk --debug
+      # Debug builds skip lint, so a release-only lint failure (an AGP
+      # upgrade breaking a plugin's analysis, say) stayed invisible until
+      # release day. This runs the same checks without needing the
+      # signing secrets a full release build would.
+      - name: Lint the release variant
+        run: ./gradlew :app:lintVitalRelease --console=plain
+        working-directory: android

@@ -94,7 +94,9 @@ jobs:
         uses: actions/setup-java@v5
         with:
           distribution: zulu
-          java-version: "17"
+          # AGP 9 lint calls Java 21 APIs; on 17 it dies with
+          # NoSuchMethodError while analysing plugin sources.
+          java-version: "21"
 
       - name: Install Linux build deps
         if: matrix.target == 'linux'
