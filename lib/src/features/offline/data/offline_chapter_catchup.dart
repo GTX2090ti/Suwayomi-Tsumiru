@@ -226,8 +226,10 @@ Future<void> runKeepRuleCatchUp(ProviderContainer container) async {
     }
     // Manga still waiting on server-side downloads get retried here too — the
     // queue-drain edge alone can be missed when downloads finish faster than
-    // the subscription reports them.
-    await _pullAwaiting(container);
+    // the subscription reports them. Skipping the ones this pass just
+    // reconciled: their chapters were enqueued moments ago, so a second
+    // reconcile can only re-ask the server for the same chapters (#413).
+    await _pullAwaiting(container, skip: touched);
     // If a drain event arrived while this pass was in flight, the listener
     // deferred it instead of dropping it. Re-run the pull now so chapters that
     // became serverIsDownloaded during the pass are not stranded until the next
@@ -264,12 +266,21 @@ Future<void> pullAfterServerDownloads(ProviderContainer container) async {
   }
 }
 
-Future<void> _pullAwaiting(ProviderContainer container) async {
+/// [skip] holds manga already reconciled by the caller in this same pass.
+/// They keep their obligation for the next drain edge or pass; what they must
+/// not get is a second reconcile moments after the first.
+Future<void> _pullAwaiting(
+  ProviderContainer container, {
+  Set<int> skip = const {},
+}) async {
   if (awaitingServerDownloads.isEmpty) return;
   if (!container.read(offlineActiveProvider)) return;
+  var pulled = false;
   // One obligation at a time, persisted after each: a crash mid-loop keeps
   // the unprocessed rest, and a batch clear would lose them.
   for (final mangaId in {...awaitingServerDownloads}) {
+    if (skip.contains(mangaId)) continue;
+    pulled = true;
     awaitingServerDownloads.remove(mangaId);
     // The reconcile may re-add this manga (a NEW server enqueue) — that is a
     // fresh obligation, not the one being consumed, so it must survive.
@@ -277,7 +288,7 @@ Future<void> _pullAwaiting(ProviderContainer container) async {
     if (!ok) awaitingServerDownloads.add(mangaId);
     await persistAwaitingServerDownloads(container.read);
   }
-  await container.read(downloadStarterProvider)();
+  if (pulled) await container.read(downloadStarterProvider)();
 }
 
 /// Scans the feed for keep-rule manga touched since [watermark]. Boundary
