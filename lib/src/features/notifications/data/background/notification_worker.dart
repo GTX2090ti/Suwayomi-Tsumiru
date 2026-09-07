@@ -511,11 +511,19 @@ TokenBroker _brokerFor(NotificationStateStore store, NotificationEndpoint ep) {
         addPort: ep.addPort,
         isGraphQl: true,
       );
+      // Read fresh: the token record and its headers travel together.
+      Map<String, String> extraHeaders = const {};
+      try {
+        extraHeaders = store.readTokenRecord()?.extraHeaders ?? const {};
+      } catch (_) {}
       try {
         final res = await http
             .post(
               Uri.parse(endpoint),
-              headers: const {'Content-Type': 'application/json'},
+              headers: applyIsolateCustomHeaders(
+                {'Content-Type': 'application/json'},
+                extraHeaders,
+              ),
               body: jsonEncode({
                 'query':
                     r'mutation RefreshToken($input: RefreshTokenInput!){ refreshToken(input: $input){ accessToken } }',

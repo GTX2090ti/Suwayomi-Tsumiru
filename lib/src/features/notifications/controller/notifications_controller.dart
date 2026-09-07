@@ -13,6 +13,7 @@ import '../../../constants/enum.dart';
 import '../../../global_providers/global_providers.dart';
 import '../../../utils/extensions/custom_extensions.dart';
 import '../../auth/data/auth_credentials_store.dart';
+import '../../auth/data/custom_headers_store.dart';
 import '../../auth/data/jwt_utils.dart';
 import '../../offline/data/background/background_schedule.dart';
 import '../../offline/data/background/background_token_record.dart';
@@ -60,6 +61,9 @@ class NotificationsController {
       refreshToken: creds?.uiRefreshToken,
       basicCredential: basicToken,
       simpleCookie: creds?.simpleLoginCookie,
+      extraHeaders: Map<String, String>.from(
+        _ref.read(customHttpHeadersProvider).value ?? const {},
+      ),
     );
   }
 

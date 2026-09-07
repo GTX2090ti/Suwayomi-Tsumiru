@@ -712,6 +712,7 @@ class DownloadTaskHandler extends TaskHandler {
         final cookie = _record.simpleCookie;
         if (cookie != null && cookie.isNotEmpty) headers['Cookie'] = cookie;
     }
+    applyIsolateCustomHeaders(headers, _record.extraHeaders);
   }
 
   // ---------------------------------------------------------------------------
@@ -790,6 +791,7 @@ class DownloadTaskHandler extends TaskHandler {
           fetchUrl = '$fetchUrl${sep}token=${Uri.encodeQueryComponent(token)}';
         }
     }
+    applyIsolateCustomHeaders(headers, _record.extraHeaders);
     return (fetchUrl, headers);
   }
 
@@ -846,7 +848,10 @@ class DownloadTaskHandler extends TaskHandler {
         final res = await _http
             .post(
               Uri.parse(endpoint),
-              headers: const {'Content-Type': 'application/json'},
+              headers: applyIsolateCustomHeaders(
+                {'Content-Type': 'application/json'},
+                _record.extraHeaders,
+              ),
               body: body,
             )
             .timeout(_httpTimeout);

@@ -21,6 +21,7 @@ import '../../../../utils/crash/diagnostics.dart';
 import '../../../../utils/extensions/custom_extensions.dart';
 import '../../../../utils/logger/logger.dart';
 import '../../../auth/data/auth_credentials_store.dart';
+import '../../../auth/data/custom_headers_store.dart';
 import '../../../notifications/controller/notification_settings_providers.dart';
 import '../../../notifications/controller/notifications_controller.dart';
 import '../../../notifications/data/local_notification_service.dart';
@@ -1291,6 +1292,9 @@ class BackgroundDownloadController with WidgetsBindingObserver {
       refreshToken: creds?.uiRefreshToken,
       basicCredential: basicToken,
       simpleCookie: creds?.simpleLoginCookie,
+      extraHeaders: Map<String, String>.from(
+        _ref.read(customHttpHeadersProvider).value ?? const {},
+      ),
     );
   }
 

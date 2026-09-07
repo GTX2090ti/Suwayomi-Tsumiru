@@ -2071,6 +2071,38 @@
   "@customColorFilter": {
     "description": "Custom-filter tab: RGBA color filter toggle"
   },
+  "customHeaders": "Custom HTTP headers",
+  "@customHeaders": {
+    "description": "Section title for generic custom HTTP headers sent with every server request (e.g. Cloudflare Zero Trust)"
+  },
+  "customHeadersDescription": "Sent with every request to your server. Only needed when the server sits behind an authentication gateway, Zero Trust guard, or reverse proxy that requires extra headers.",
+  "@customHeadersDescription": {
+    "description": "Explanation under the Custom HTTP headers section"
+  },
+  "customHeaderEmpty": "No custom headers. Add one if your server sits behind an authentication gateway or reverse proxy that requires extra headers.",
+  "@customHeaderEmpty": {
+    "description": "Empty state for the custom headers list"
+  },
+  "customHeaderName": "Header name",
+  "@customHeaderName": {
+    "description": "Label for the custom header name field"
+  },
+  "customHeaderValue": "Header value",
+  "@customHeaderValue": {
+    "description": "Label for the custom header value field"
+  },
+  "customHeaderAdd": "Add header",
+  "@customHeaderAdd": {
+    "description": "Button to add a custom HTTP header"
+  },
+  "customHeaderNameInvalid": "Invalid header name (no spaces or colons).",
+  "@customHeaderNameInvalid": {
+    "description": "Validation error for a bad custom header name"
+  },
+  "customHeaderExists": "A header with this name already exists.",
+  "@customHeaderExists": {
+    "description": "Validation error for a duplicate custom header name"
+  },
   "colorFilterRed": "Red",
   "@colorFilterRed": {},
   "colorFilterGreen": "Green",

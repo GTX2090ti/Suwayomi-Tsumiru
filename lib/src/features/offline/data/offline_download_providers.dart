@@ -24,6 +24,7 @@ import '../../../utils/misc/toast/toast.dart';
 import '../../../utils/network/graphql_errors.dart';
 import '../../../utils/platform/is_android_native.dart';
 import '../../auth/data/auth_credentials_store.dart';
+import '../../auth/data/custom_headers_store.dart';
 import '../../library/presentation/library/controller/library_manga_list.dart';
 import '../../manga_book/data/downloads/downloads_repository.dart';
 import '../../manga_book/data/manga_book/manga_book_repository.dart';
@@ -1206,6 +1207,8 @@ Future<PageBytes> fetchOfflinePageBytes(Ref ref, String pageUrl) async {
     fetchUrl =
         '$fetchUrl${sep}token=${Uri.encodeQueryComponent(creds!.uiAccessToken!)}';
   }
+  applyCustomHeaders(
+      headers, ref.read(customHttpHeadersProvider).value);
 
   final http.Response res;
   try {
