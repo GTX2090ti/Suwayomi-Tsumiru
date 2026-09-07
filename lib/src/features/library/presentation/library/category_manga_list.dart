@@ -19,6 +19,7 @@ import '../../../../widgets/shell/update_banner_state.dart';
 import '../../../manga_book/data/downloads/downloads_repository.dart';
 import '../../../manga_book/data/manga_book/manga_book_repository.dart';
 import '../../../manga_book/data/updates/updates_repository.dart';
+import '../../../manga_book/domain/chapter/chapter_model.dart';
 import '../../../manga_book/domain/manga/manga_model.dart';
 import '../../../manga_book/presentation/manga_details/widgets/edit_manga_category_dialog.dart';
 import '../../../migration/domain/migration_models.dart';
@@ -32,6 +33,14 @@ import 'controller/library_controller.dart';
 import 'controller/library_manga_list.dart';
 import 'widgets/edit_mangas_category_dialog.dart';
 import 'widgets/library_manga_grid_view.dart';
+
+/// Chapter ids worth sending to the server's download queue: the ones it does
+/// not hold yet. A bulk selection is mostly chapters the server already has,
+/// and queueing those buries the real downloads in thousands of no-ops.
+List<int> serverDownloadIds(List<ChapterDto>? chapters) => [
+  for (final c in chapters ?? const <ChapterDto>[])
+    if (!c.isDownloaded) c.id,
+];
 
 class CategoryMangaList extends HookConsumerWidget {
   const CategoryMangaList({super.key, required this.categoryId});
@@ -263,9 +272,7 @@ class CategoryMangaList extends HookConsumerWidget {
                     final dl = ref.read(downloadsRepositoryProvider);
                     for (final id in ids) {
                       final chapters = await repo.getChapterList(id);
-                      final chapterIds = <int>[
-                        for (final c in chapters ?? const []) c.id,
-                      ];
+                      final chapterIds = serverDownloadIds(chapters);
                       if (chapterIds.isNotEmpty) {
                         await dl.addChaptersBatchToDownloadQueue(chapterIds);
                       }
