@@ -481,10 +481,12 @@ void main() {
       expect(service.running, isFalse);
       final startsBeforeChange = service.starts;
 
+      final expectedStarts =
+          startsBeforeChange + (state == 'queued' ? 1 : 0);
       container.read(offlineWifiOnlyProvider.notifier).update(false);
-      await pumpEventQueue();
+      await pumpUntil(() => service.starts >= expectedStarts);
 
-      expect(service.starts, startsBeforeChange + (state == 'queued' ? 1 : 0));
+      expect(service.starts, expectedStarts);
       expect(service.running, state == 'queued');
       if (state == 'refused') {
         expect(container.read(offlineDownloadsStalledProvider), 'background');
