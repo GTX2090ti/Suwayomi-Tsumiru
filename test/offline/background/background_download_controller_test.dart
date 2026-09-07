@@ -197,6 +197,17 @@ void main() {
     );
   }
 
+  /// Pumps until [ready] holds. A bare `pumpEventQueue()` gives a fixed number
+  /// of turns, so on a loaded machine an in-flight restart is asserted before
+  /// it lands.
+  Future<void> pumpUntil(bool Function() ready) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 10));
+    while (!ready() && DateTime.now().isBefore(deadline)) {
+      await pumpEventQueue(times: 1);
+    }
+    await pumpEventQueue();
+  }
+
   List<_ManualTimer> useManualTimers() {
     final timers = <_ManualTimer>[];
     makeTimer = (duration, callback) {
@@ -534,7 +545,7 @@ void main() {
 
       service.running = false;
       timers.singleWhere((timer) => timer.isActive).fire();
-      await pumpEventQueue();
+      await pumpUntil(() => service.starts >= 1);
 
       expect(service.starts, 1);
       expect(service.running, isTrue);
@@ -583,7 +594,7 @@ void main() {
         const Duration(milliseconds: 500),
       );
       timers.singleWhere((timer) => timer.isActive).fire();
-      await pumpEventQueue();
+      await pumpUntil(() => service.starts >= 1);
 
       expect(service.starts, 1);
       expect(service.running, isTrue);
@@ -604,7 +615,7 @@ void main() {
     await controller.pause();
 
     timers.singleWhere((timer) => timer.isActive).fire();
-    await pumpEventQueue();
+    await pumpUntil(() => service.starts >= 1);
     expect(service.starts, 1);
     expect(service.messages, [
       {'op': 'pause'},
@@ -619,7 +630,7 @@ void main() {
     service.onStart = null;
     service.running = false;
     timers.singleWhere((timer) => timer.isActive).fire();
-    await pumpEventQueue();
+    await pumpUntil(() => service.starts >= 2);
 
     expect(service.starts, 2);
     expect(service.running, isTrue);
@@ -678,7 +689,7 @@ void main() {
               timer.duration == const Duration(milliseconds: 500),
         )
         .fire();
-    await pumpEventQueue();
+    await pumpUntil(() => service.starts >= 1);
 
     expect(service.starts, 1);
     expect(parkTimer.isActive, isFalse);
