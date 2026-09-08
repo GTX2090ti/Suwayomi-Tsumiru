@@ -1,0 +1,320 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
+import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:riverpod_annotation/riverpod_annotation.dart';
+
+import '../constants/db_keys.dart';
+import '../constants/enum.dart';
+import '../features/about/presentation/about/about_screen.dart';
+import '../features/browse_center/domain/source/source_model.dart';
+import '../features/browse_center/presentation/browse/browse_screen.dart';
+import '../features/browse_center/presentation/extension/extension_screen.dart';
+import '../features/browse_center/presentation/extension_store/extension_store_screen.dart';
+import '../features/browse_center/presentation/global_search/global_search_screen.dart';
+import '../features/browse_center/presentation/source/source_filter_screen.dart';
+import '../features/browse_center/presentation/source/source_screen.dart';
+import '../features/browse_center/presentation/source_manga_list/source_manga_list_screen.dart';
+import '../features/browse_center/presentation/source_preference/source_preference_screen.dart';
+import '../features/history/presentation/history_screen.dart';
+import '../features/hotkeys/presentation/global_shortcut_host.dart';
+import '../features/hotkeys/presentation/hotkeys_settings_screen.dart';
+import '../features/library/presentation/category/edit_category_screen.dart';
+import '../features/library/presentation/duplicates/library_duplicates_screen.dart';
+import '../features/library/presentation/library/library_screen.dart';
+import '../features/manga_book/presentation/downloads/downloads_screen.dart';
+import '../features/manga_book/presentation/manga_details/manga_details_screen.dart';
+import '../features/manga_book/presentation/reader/reader_screen.dart';
+import '../features/manga_book/presentation/recommends/recommends_browse_screen.dart';
+import '../features/manga_book/presentation/recommends/recommends_screen.dart';
+import '../features/manga_book/presentation/upcoming/upcoming_screen.dart';
+import '../features/manga_book/presentation/updates/updates_screen.dart';
+import '../features/manga_book/widgets/update_status_summary_sheet.dart';
+import '../features/migration/domain/migration_models.dart';
+import '../features/migration/presentation/screens/migration_bulk_config_screen.dart';
+import '../features/migration/presentation/screens/migration_bulk_run_screen.dart';
+import '../features/migration/presentation/screens/migration_global_search_screen.dart';
+import '../features/migration/presentation/screens/migration_source_picker_screen.dart';
+import '../features/offline/presentation/offline_settings_screen.dart';
+import '../features/onboarding/data/onboarding_complete.dart';
+import '../features/onboarding/presentation/onboarding_screen.dart';
+import '../features/quick_open/presentation/search_stack/search_stack_screen.dart';
+import '../features/settings/presentation/appearance/appearance_screen.dart';
+import '../features/settings/presentation/backup/backup_screen.dart';
+import '../features/settings/presentation/browse/browse_settings_screen.dart';
+import '../features/settings/presentation/connection/connection_screen.dart';
+import '../features/settings/presentation/downloads/downloads_settings_screen.dart';
+import '../features/settings/presentation/general/general_screen.dart';
+import '../features/settings/presentation/library/library_settings_screen.dart';
+import '../features/settings/presentation/more/more_screen.dart';
+import '../features/settings/presentation/notifications/notifications_settings_screen.dart';
+import '../features/settings/presentation/reader/reader_settings_screen.dart';
+import '../features/settings/presentation/reader/widgets/reader_general_prefs/reader_general_prefs.dart';
+import '../features/settings/presentation/server/server_screen.dart';
+import '../features/settings/presentation/settings/settings_screen.dart';
+import '../features/tracking/presentation/settings/tracking_settings_screen.dart';
+import '../utils/extensions/custom_extensions.dart';
+import '../widgets/shell/navigation_shell_screen.dart';
+
+part 'router_config.g.dart';
+part 'sub_routes/browser_routes.dart';
+part 'sub_routes/common_routes.dart';
+part 'sub_routes/downloads_routes.dart';
+part 'sub_routes/history_routes.dart';
+part 'sub_routes/library_routes.dart';
+part 'sub_routes/migration_routes.dart';
+part 'sub_routes/more_routes.dart';
+part 'sub_routes/updates_routes.dart';
+
+final rootNavigatorKey = GlobalKey<NavigatorState>(debugLabel: 'root');
+
+final _quickOpenNavigatorKey =
+    GlobalKey<NavigatorState>(debugLabel: 'Quick Open');
+
+final _shellNavigatorKey = GlobalKey<NavigatorState>(debugLabel: 'shell');
+final _browseNavigatorKey = GlobalKey<NavigatorState>(debugLabel: 'browse');
+
+abstract class Routes {
+  static const library = '/library/:categoryId';
+  static const libraryDuplicates = '/library-duplicates';
+
+  static const updates = '/updates';
+
+  static const upcoming = '/upcoming';
+
+  static const downloads = '/downloads';
+
+  static const history = 'history';
+
+  static const extensionRoute = '/extension';
+  static const migrate = '/migrate';
+  static const source = '/source';
+  static const sourceFilter = '/source-filter';
+  static const sourceManga = ':sourceId';
+  static const sourceMangaType = '$sourceManga/:sourceType';
+  static const sourcePreference = '$sourceManga/preference';
+
+  // More
+  static const more = '/more';
+  static const settings = 'settings';
+  static const librarySettings = 'library';
+  static const editCategories = 'edit-categories';
+  static const browseSettings = 'browse';
+  static const extensionStoreSettings = 'extension-store';
+  static const readerSettings = 'reader';
+  static const appearanceSettings = 'appearance';
+  static const generalSettings = 'general';
+  static const backup = 'backup';
+  static const serverSettings = 'server';
+  static const downloadsSettings = 'downloads';
+  static const offlineSettings = 'offline';
+  static const notificationsSettings = 'notifications';
+  static const connection = 'connection';
+  static const trackingSettings = 'tracking';
+  static const hotkeysSettings = 'hotkeys';
+
+  // Commons
+  static const mangaRoute = '/manga/:mangaId';
+  static const reader = 'chapter/:chapterId';
+  static const updateStatus = "/update-status";
+  static const about = 'about';
+  static const globalSearch = '/global-search';
+  static const recommends = '/recommends/:mangaId';
+  static const recommendsBrowse = '/recommends/:mangaId/:providerName';
+  static const onboarding = '/onboarding';
+
+  // Migration
+  static const migrationGlobalSearch = '/migration/global-search';
+  static const migrationBulkConfig = '/migration/bulk-config';
+  static const migrationBulkRun = '/migration/bulk-run';
+  static const migrationSourcePicker = '/migration/source-picker';
+  static const migrationSourceManga = '/migration/source-manga';
+}
+
+@riverpod
+GoRouter routerConfig(Ref ref) {
+  return GoRouter(
+    routes: $appRoutes,
+    debugLogDiagnostics: true,
+    initialLocation: const LibraryRoute(categoryId: 0).location,
+    navigatorKey: rootNavigatorKey,
+    redirect: (context, state) {
+      // First-run gate: until onboarding is finished, send everything to the
+      // wizard (and keep finished users out of it).
+      final complete = ref.read(onboardingCompleteProvider) ?? false;
+      final atOnboarding =
+          state.matchedLocation == const OnboardingRoute().location;
+      if (!complete && !atOnboarding) return const OnboardingRoute().location;
+      if (complete && atOnboarding) {
+        return const LibraryRoute(categoryId: 0).location;
+      }
+      return null;
+    },
+  );
+}
+
+@TypedShellRoute<QuickSearchRoute>(
+  routes: [
+    TypedStatefulShellRoute<NavigationShellRoute>(
+      branches: [
+        TypedStatefulShellBranch<LibraryBranch>(
+          routes: [
+            TypedGoRoute<LibraryRoute>(
+              path: Routes.library,
+              routes: [],
+            ),
+          ],
+        ),
+        TypedStatefulShellBranch<UpdatesBranch>(
+          routes: [TypedGoRoute<UpdatesRoute>(path: Routes.updates)],
+        ),
+        TypedStatefulShellBranch<HistoryBranch>(
+          routes: [TypedGoRoute<HistoryTabRoute>(path: '/history')],
+        ),
+        TypedStatefulShellBranch<BrowserBranch>(
+          routes: [
+            TypedStatefulShellRoute<BrowseShellRoute>(
+              branches: [
+                TypedStatefulShellBranch<BrowseSourceBranch>(
+                  routes: [
+                    TypedGoRoute<BrowseSourceRoute>(
+                      path: Routes.source,
+                      routes: [
+                        TypedGoRoute<SourcePreferenceRoute>(
+                          path: Routes.sourcePreference,
+                        ),
+                        TypedGoRoute<SourceTypeRoute>(
+                          path: Routes.sourceMangaType,
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                TypedStatefulShellBranch<BrowseExtensionBranch>(
+                  routes: [
+                    TypedGoRoute<BrowseExtensionRoute>(
+                      path: Routes.extensionRoute,
+                    ),
+                  ],
+                ),
+                TypedStatefulShellBranch<BrowseMigrateBranch>(
+                  routes: [
+                    TypedGoRoute<BrowseMigrateRoute>(
+                      path: Routes.migrate,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ],
+        ),
+        TypedStatefulShellBranch<DownloadsBranch>(
+          routes: [TypedGoRoute<DownloadsRoute>(path: Routes.downloads)],
+        ),
+        TypedStatefulShellBranch<MoreBranch>(
+          routes: [
+            TypedGoRoute<MoreRoute>(
+              path: Routes.more,
+              routes: [
+                TypedGoRoute<AboutRoute>(path: Routes.about),
+                TypedGoRoute<ConnectionRoute>(path: Routes.connection),
+                TypedGoRoute<HistoryRoute>(path: Routes.history),
+                TypedGoRoute<SettingsRoute>(
+                  path: Routes.settings,
+                  routes: [
+                    TypedGoRoute<LibrarySettingsRoute>(
+                      path: Routes.librarySettings,
+                      routes: [
+                        TypedGoRoute<EditCategoriesRoute>(
+                            path: Routes.editCategories)
+                      ],
+                    ),
+                    TypedGoRoute<ServerSettingsRoute>(
+                        path: Routes.serverSettings),
+                    TypedGoRoute<ReaderSettingsRoute>(
+                        path: Routes.readerSettings),
+                    TypedGoRoute<AppearanceSettingsRoute>(
+                        path: Routes.appearanceSettings),
+                    TypedGoRoute<GeneralSettingsRoute>(
+                        path: Routes.generalSettings),
+                    TypedGoRoute<BrowseSettingsRoute>(
+                      path: Routes.browseSettings,
+                      routes: [
+                        TypedGoRoute<ExtensionStoreRoute>(
+                            path: Routes.extensionStoreSettings),
+                      ],
+                    ),
+                    TypedGoRoute<BackupRoute>(path: Routes.backup),
+                    TypedGoRoute<DownloadsSettingsRoute>(
+                        path: Routes.downloadsSettings),
+                    TypedGoRoute<OfflineSettingsRoute>(
+                        path: Routes.offlineSettings),
+                    TypedGoRoute<NotificationsSettingsRoute>(
+                        path: Routes.notificationsSettings),
+                    TypedGoRoute<TrackingSettingsRoute>(
+                        path: Routes.trackingSettings),
+                    TypedGoRoute<HotkeysSettingsRoute>(
+                        path: Routes.hotkeysSettings),
+                  ],
+                ),
+              ],
+            ),
+          ],
+        ),
+      ],
+    ),
+    TypedGoRoute<MangaRoute>(
+      path: Routes.mangaRoute,
+      routes: [TypedGoRoute<ReaderRoute>(path: Routes.reader)],
+    ),
+    TypedGoRoute<UpdateStatusRoute>(path: Routes.updateStatus),
+    TypedGoRoute<GlobalSearchRoute>(path: Routes.globalSearch),
+    TypedGoRoute<LibraryDuplicatesRoute>(path: Routes.libraryDuplicates),
+    TypedGoRoute<RecommendsRoute>(path: Routes.recommends),
+    TypedGoRoute<RecommendsBrowseRoute>(path: Routes.recommendsBrowse),
+    TypedGoRoute<SourceFilterRoute>(path: Routes.sourceFilter),
+    TypedGoRoute<MigrationGlobalSearchRoute>(
+        path: Routes.migrationGlobalSearch),
+    TypedGoRoute<MigrationBulkConfigRoute>(path: Routes.migrationBulkConfig),
+    TypedGoRoute<MigrationBulkRunRoute>(path: Routes.migrationBulkRun),
+    TypedGoRoute<MigrationSourcePickerRoute>(
+        path: Routes.migrationSourcePicker),
+    TypedGoRoute<MigrationSourceMangaRoute>(path: Routes.migrationSourceManga),
+  ],
+)
+@immutable
+class QuickSearchRoute extends ShellRouteData {
+  const QuickSearchRoute();
+
+  static final $navigatorKey = _quickOpenNavigatorKey;
+
+  @override
+  Widget builder(context, state, navigator) =>
+      AnnotatedRegion<SystemUiOverlayStyle>(
+        value: SystemUiOverlayStyle(
+          systemNavigationBarColor: Theme.of(context)
+              .colorScheme
+              .surface
+              .withValues(alpha: 0.60),
+          systemNavigationBarIconBrightness:
+              Theme.of(context).brightness == Brightness.dark
+                  ? Brightness.light
+                  : Brightness.dark,
+          systemNavigationBarDividerColor: Colors.transparent,
+        ),
+        child: GlobalShortcutHost(
+          child: SearchStackScreen(child: navigator),
+        ),
+      );
+}
+
+// Shell Routes
+class NavigationShellRoute extends StatefulShellRouteData {
+  const NavigationShellRoute();
+
+  static final $navigatorKey = _shellNavigatorKey;
+
+  @override
+  Widget builder(context, state, navigationShell) =>
+      NavigationShellScreen(child: navigationShell);
+}

@@ -1,0 +1,106 @@
+part of '../router_config.dart';
+
+class BrowserBranch extends StatefulShellBranchData {
+  const BrowserBranch();
+  static final $initialLocation = const BrowseSourceRoute().location;
+}
+
+class BrowseShellRoute extends StatefulShellRouteData {
+  const BrowseShellRoute();
+
+  static final $navigatorKey = _browseNavigatorKey;
+
+  static Widget $navigatorContainerBuilder(
+    BuildContext context,
+    StatefulNavigationShell navigationShell,
+    List<Widget> children,
+  ) =>
+      BrowseScreen(
+        key: const ValueKey('browse'),
+        currentIndex: navigationShell.currentIndex,
+        onDestinationSelected: (index) => navigationShell.goBranch(
+          index,
+          initialLocation: index == navigationShell.currentIndex,
+        ),
+        children: children,
+      );
+
+  @override
+  Widget builder(context, state, navigationShell) => navigationShell;
+}
+
+class BrowseExtensionBranch extends StatefulShellBranchData {
+  const BrowseExtensionBranch();
+  static final $initialLocation = const BrowseExtensionRoute().location;
+}
+
+class BrowseExtensionRoute extends GoRouteData with $BrowseExtensionRoute {
+  const BrowseExtensionRoute();
+
+  @override
+  Widget build(context, state) => const ExtensionScreen();
+}
+
+class BrowseSourceBranch extends StatefulShellBranchData {
+  const BrowseSourceBranch();
+  static final $initialLocation = const BrowseSourceRoute().location;
+}
+
+class BrowseSourceRoute extends GoRouteData with $BrowseSourceRoute {
+  const BrowseSourceRoute();
+
+  @override
+  Widget build(context, state) => const SourceScreen();
+}
+
+class BrowseMigrateBranch extends StatefulShellBranchData {
+  const BrowseMigrateBranch();
+  static final $initialLocation = const BrowseMigrateRoute().location;
+}
+
+class BrowseMigrateRoute extends GoRouteData with $BrowseMigrateRoute {
+  const BrowseMigrateRoute();
+
+  @override
+  Widget build(context, state) => const MigrationSourcePickerBody();
+}
+
+class SourceTypeRoute extends GoRouteData with $SourceTypeRoute {
+  const SourceTypeRoute({
+    required this.sourceId,
+    required this.sourceType,
+    this.query,
+  });
+  final String sourceId;
+  final SourceType sourceType;
+  final String? query;
+
+  static final $parentNavigatorKey = _quickOpenNavigatorKey;
+
+  @override
+  Widget build(context, state) => SourceMangaListScreen(
+        key: ValueKey('$sourceId-$sourceType'),
+        sourceId: sourceId,
+        sourceType: sourceType,
+        initialQuery: query,
+      );
+}
+
+class SourceFilterRoute extends GoRouteData with $SourceFilterRoute {
+  const SourceFilterRoute();
+
+  static final $parentNavigatorKey = _quickOpenNavigatorKey;
+
+  @override
+  Widget build(context, state) => const SourceFilterScreen();
+}
+
+class SourcePreferenceRoute extends GoRouteData with $SourcePreferenceRoute {
+  const SourcePreferenceRoute({required this.sourceId});
+
+  static final $parentNavigatorKey = _quickOpenNavigatorKey;
+  final String sourceId;
+
+  @override
+  Widget build(context, state) => SourcePreferenceScreen(sourceId: sourceId);
+}

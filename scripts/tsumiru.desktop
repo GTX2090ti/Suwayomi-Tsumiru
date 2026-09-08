@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Tsumiru
+Comment=Tachidesk UI flutter
+Exec=tsumiru
+Icon=tsumiru
+Terminal=false
+Type=Application
+Categories=Network;

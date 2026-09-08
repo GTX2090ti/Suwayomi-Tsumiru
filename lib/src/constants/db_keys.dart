@@ -1,0 +1,349 @@
+// Copyright (c) 2022 Contributors to the Suwayomi project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+import 'package:flutter/material.dart';
+
+import 'app_theme.dart';
+import 'enum.dart';
+
+enum DBKeys {
+  serverUrl('http://127.0.0.1'),
+  // The address configured by the user for access away from their LAN. The
+  // older `serverUrl` key remains the *currently selected* endpoint so all
+  // existing request code can keep sharing one URL.
+  serverExternalUrl(null),
+  // Optional private/LAN address for the same server instance.
+  serverLanUrl(null),
+  serverPort(4567),
+  serverPortToggle(true),
+  // First-time onboarding: false until the wizard is finished. A one-time
+  // migration seeds it true for installs that already have a server configured.
+  onboardingComplete(false),
+  sourceLanguageFilter(["all", "lastUsed", "en", "localsourcelang"]),
+  // Ordered target-source priority for bulk migration (source ids, most
+  // preferred first).
+  migrationTargetSources(<String>[]),
+  extensionLanguageFilter(["installed", "update", "en", "all"]),
+  sourceLastUsed(null),
+  themeMode(ThemeMode.system),
+  isTrueBlack(false),
+  authType(AuthType.none),
+  basicCredentials(null),
+  authUsername(null),
+  readerMode(ReaderMode.singleHorizontalRTL),
+  readerPadding(0.0),
+  // Desktop mouse wheel. Flutter's Linux embedder moves 53px per notch, which
+  // reads slower than the browser WebUI runs in; 1.7 lines them up.
+  readerMouseScrollSpeed(1.7),
+  // Migration source for the per-viewer keys below only; nothing reads this
+  // directly. Default changed from disabled to defaultNavigation to match
+  // Komikku's tap zones on by default.
+  readerNavigationLayout(ReaderNavigationLayout.defaultNavigation),
+  invertTap(false),
+  quickSearchToggle(true),
+  swipeToggle(true),
+  lastPageSwipeEnabled(false),
+  scrollAnimation(true),
+  showNSFW(true),
+  showRecommendations(true),
+  recommendsInOverflow(false),
+  downloadedBadge(false),
+  // On by default: the badge shipped always-on, so off would change behavior.
+  onDeviceBadge(true),
+  // Supersedes the `unreadBadge` bool.
+  unreadBadgeMode(UnreadBadgeMode.count),
+  readProgressBar(false),
+  languageBadge(false),
+  // Also covers Local Source (a folder glyph), retiring the `localBadge` key.
+  sourceBadge(false),
+  libraryGridStyle(LibraryGridStyle.uniform),
+  outlineOnCovers(true),
+  // Badge layout, as LibraryBadge ids: `badgeRightSide` holds the ids pinned
+  // to a cover's top-RIGHT corner, everything else clusters top-LEFT.
+  badgeOrder(<String>[]),
+  badgeRightSide(<String>['onDevice', 'language', 'source']),
+  limitTitleLines(true),
+  // Uniform scale for the List / Descriptive List modes. 1.0 = shipped size.
+  listScale(1.0),
+  libraryGroupStyle(LibraryGroupStyle.tabs),
+  // Library display: overlay a play button on covers that jumps straight into
+  // the next unread chapter. Off by default, matching Suwayomi-WebUI.
+  showContinueReadingButton(false),
+  // Which category new manga land in when added to the library. -1 = always ask
+  // (show the category picker), 0 = Default/uncategorized, >0 = a specific
+  // category id. Mirrors Komikku's Default category preference.
+  libraryDefaultCategory(-1),
+  // null = follow the device locale (MaterialApp resolves it against the
+  // supported set, falling back to English). A hardcoded default forced every
+  // fresh install to English regardless of the device language.
+  l10n(null),
+  mangaFilterDownloaded(null),
+  mangaFilterOffline(null),
+  mangaFilterUnread(null),
+  mangaFilterCompleted(null),
+  mangaFilterStarted(null),
+  mangaFilterBookmarked(null),
+  chapterFilterDownloaded(null),
+  chapterFilterUnread(null),
+  chapterFilterBookmarked(null),
+  updatesFilterDownloaded(null),
+  updatesFilterUnread(null),
+  updatesFilterStarted(null),
+  updatesFilterBookmarked(null),
+  updatesGroupingMode(null),
+  historyFilterUnfinishedSeries(null),
+  historyFilterUnread(null),
+  historyFilterInLibrary(null),
+  mangaSort(MangaSort.lastRead),
+  // Default descending so the default Last-Read sort opens newest-read first
+  // (last-read-descending). asc=true, dsc=false.
+  mangaSortDirection(false),
+  chapterSort(ChapterSort.source),
+  chapterSortDirection(false), // asc=true, dsc=false
+  chapterDisplay(ChapterDisplay.sourceTitle),
+  libraryDisplayMode(DisplayMode.grid),
+  sourceDisplayMode(DisplayMode.grid),
+  globalSearchSourceFilter(GlobalSearchSourceFilter.pinned),
+  gridMangaCoverWidth(192.0),
+  // Off, like Mihon/Komikku (ReaderViewModel: `menuVisible = false`): a reader
+  // opens on the page, not on the chrome. Anyone who wants the title and quick
+  // settings up front can turn it back on in Settings > Reader.
+  readerOverlay(false),
+  // Show the continuous-reader feedback snackbars ("loading next chapter",
+  // "no more chapters", etc.). Off = a quiet reading experience.
+  readerFeedbackToasts(true),
+  volumeTap(false),
+  volumeTapInvert(false),
+  keepScreenOn(true),
+  hideEmptyCategory(false),
+  // Ambient "Updating library (NN%)" strip shown app-root while a global/
+  // category update is running. On by default, matching Komikku's pref.
+  showUpdateProgressBanner(true),
+  // Desktop sidebar expanded (labels beside icons) vs collapsed to an icon rail.
+  sidebarExpanded(true),
+  // When false (default), opening an entry shows the chapters the
+  // server already has, without re-scraping the source. When true, also refresh
+  // from the source on open.
+  refreshChaptersFromSource(false),
+  pinchToZoom(true),
+  // Default to edge-to-edge (fullscreen=true + drawUnderCutout):
+  // the webtoon strip fills the whole screen, including the status-bar / camera
+  // -cutout row at the top. Users can re-enable insets in reader settings.
+  readerIgnoreSafeArea(true),
+  appTheme(AppTheme.indigoNight),
+  customThemeColor(0xFF7C7BFF),
+  historyEnabled(true),
+  historyRetentionDays(90),
+  // Timeout Settings
+  // 30s matches Komikku's source read timeout; pages proxied live from a
+  // source routinely exceed 5s on first fetch. Kept in sync with
+  // TimeoutConstants.requestTimeoutDefaultMs (enum initializers can't
+  // reference it directly).
+  serverRequestTimeout(30000), // milliseconds
+  autoRefreshOnTimeout(true),
+  autoRefreshRetryDelay(1000), // milliseconds
+  // Offline safety-net settings
+  offlineTimeEvictEnabled(false),
+  offlineKeepDays(30),
+  offlineStorageCapEnabled(false),
+  offlineStorageCapMb(2000),
+  // How many chapter pages download at once. Low by default: a self-hosted
+  // server saturates fast and starts returning 500/503 under heavy parallelism.
+  offlineDownloadConcurrency(2),
+  // Restrict background downloads to Wi-Fi connections only. Default ON so a
+  // fresh install never burns mobile data on downloads unless the user opts in.
+  downloadOnlyOverWifi(true),
+  // User-initiated pause of all ON-DEVICE downloads. Persisted (an explicit
+  // pause shouldn't silently resume on restart); read synchronously by the
+  // download starters to gate every restart path.
+  offlineDownloadsPaused(false),
+  offlineDownloadsStalled(null),
+  offlineCatalogServerId(null),
+  // Newest chapter fetchedAt the catch-up pass has processed (epoch seconds).
+  offlineCatchUpWatermark(0),
+  // Manga ids still owed a device pull once the server finishes downloading —
+  // persisted because the watermark has already moved past their chapters.
+  offlineCatchUpAwaitingPull(null),
+  offlineLastServerId(null),
+  offlineLastServerAddress(null),
+  offlineServerMismatchDismissedList(null),
+  // Notifications (background new-chapter + download-done checks). Interval is
+  // hours; WorkManager's real floor is ~15 min, so we never offer below 1h.
+  notificationsNewChaptersEnabled(false),
+  notificationsDownloadsEnabled(true),
+  notificationsCheckIntervalHours(6),
+  notificationsWifiOnly(true),
+  notificationsChargingOnly(false),
+  notificationsHideContent(false),
+  notificationsCategoriesInclude(null),
+  notificationsCategoriesExclude(null),
+  notificationsAppUpdatesEnabled(false),
+  notificationsExtensionUpdatesEnabled(false),
+  // ON-DEVICE delete-on-read settings (frees device space; the server copy is
+  // untouched). Independent of the server's "Delete chapters" settings.
+  // whileReading: 0 = off, 1 = the just-read chapter, 2..5 = the Nth behind it.
+  localDeleteWhileReading(0),
+  localDeleteManuallyMarkedRead(false),
+  localDeleteWithBookmark(false),
+  // When true, the reconciler pulls down the slots-1 most recently read
+  // chapters if they are missing from the device (fills the protection window).
+  // Off by default to preserve existing behavior.
+  localDownloadProtectionWindow(false),
+  // Lock phones to portrait (landscape on a phone currently looks broken). Off
+  // by default — many readers prefer landscape; tablets/desktop ignore it.
+  forcePortrait(false),
+  // The release version the user chose to skip in the update prompt. The
+  // prompt stays hidden until a release newer than this one appears.
+  dismissedUpdateVersion(''),
+  updateProgressAfterReading(true),
+  updateProgressManualMarkRead(true),
+  // Library grid: explicit column count per orientation. 0 = Auto (falls back
+  // to the width-based delegate using gridMangaCoverWidth as the target size).
+  libraryPortraitColumns(0),
+  libraryLandscapeColumns(0),
+  // Tabs mode only: hides the tab-bar strip (pages stay swipeable either way).
+  categoryTabs(true),
+  // Section-Headers mode only: one continuous sticky-header scroll (on) vs one
+  // page per section with its own inline header (off).
+  sectionHeadersShowAllCategories(false),
+  // When true, categories marked as hidden are still shown as tabs.
+  showHiddenCategories(false),
+  // When true, each tab label appends "(N)" where N is the filtered manga count.
+  categoryNumberOfItems(false),
+  // When true, the library search bar is always visible under the app bar and
+  // sticks into it on scroll (Yokai/TachiyomiJ2K style). When false (default),
+  // search hides behind the app-bar search button (Mihon/Komikku style).
+  libraryPersistentSearchBar(false),
+  // How the library tabs are grouped: 0=by category (default), 1=by source,
+  // 2=by status, 3=by track status (reserved; filled in Task 8), 4=ungrouped.
+  libraryGroupType(0),
+  mangaFilterLewd(null),
+  // Minimum personal star rating to show in the library. 0 = off (show all).
+  mangaFilterMinRating(0),
+  filterCategories(false),
+  filterCategoriesInclude(<String>[]),
+  filterCategoriesExclude(<String>[]),
+  filterTags(false),
+  filterTagsInclude(<String>[]),
+  filterTagsExclude(<String>[]),
+  // Seed for the Random library sort. Incrementing this re-rolls the order.
+  librarySortRandomSeed(0),
+  // Library-wide duplicate scan (#117): also match on description substring,
+  // not just title/tracker. Off by default — it's the expensive O(n²) pass.
+  libraryDuplicatesCheckDescription(false),
+  // Reader seekbar layout. When false (default), webtoon uses
+  // the vertical side seekbar. When true, a horizontal bottom
+  // seekbar is shown in all modes (including webtoon).
+  forceHorizontalSeekbar(false),
+  // Reader side seekbar handedness. When false (default), the vertical side
+  // seekbar is anchored to the right edge. When true, it is anchored to the
+  // left edge for left-handed reading.
+  leftHandedVerticalSeekbar(false),
+  // Webtoon/long-strip zoom gestures: double-tap zoom on, zoom-out below 1x
+  // allowed (down to 0.5x) unless disabled.
+  doubleTapToZoom(true),
+  disableZoomOut(false),
+  // Paged "Disable zoom in": turns off the paged viewer's zoom wrapper.
+  disableZoomIn(false),
+  // Per-viewer zoom toggles. Paged and long strip each had their own switch in
+  // the reader sheet while sharing one stored value, so changing one changed
+  // the other. The three keys above are kept as the migration source: a viewer
+  // key that has never been written falls back to the old global value.
+  pagedDoubleTapToZoom(true),
+  pagedPinchToZoom(true),
+  pagedDisableZoomOut(false),
+  longStripDoubleTapToZoom(true),
+  longStripPinchToZoom(true),
+  longStripDisableZoomOut(false),
+  // Auto Webtoon Mode: series whose tags/source say
+  // long-strip read in webtoon mode when their per-series mode is Default.
+  autoWebtoonMode(true),
+  // Reader rotation lock. Default = never touch the platform.
+  readerOrientation(ReaderOrientation.defaultRotation),
+  // 4-value tap-zone invert. null initial keeps "unset" representable so the
+  // legacy invertTap bool still decides for users who never set this.
+  readerTapInvert(null),
+  // Paged parity prefs. Persisted now,
+  // consumed by the paged engine in a later increment.
+  imageScaleType(ImageScaleType.fitScreen),
+  zoomStart(ZoomStart.automatic),
+  pageLayout(PageLayout.automatic),
+  centerMarginType(CenterMarginType.none),
+  landscapeZoom(true),
+  navigateToPan(true),
+  invertDoublePages(false),
+  cropBorders(false),
+  // Shared by the paged and long-strip sections.
+  smallerTapZones(false),
+  // Per-viewer tap zones, seeded from the single keys above on upgrade.
+  pagedNavigationLayout(ReaderNavigationLayout.defaultNavigation),
+  longStripNavigationLayout(ReaderNavigationLayout.defaultNavigation),
+  pagedTapInvert(TapInvert.none),
+  longStripTapInvert(TapInvert.none),
+  // Off by default, matching Komikku.
+  showTapZonesOverlay(false),
+  // One free look for someone who has never seen the zones (Komikku's
+  // showNavigationOverlayNewUser), then it turns itself off.
+  tapZonesOverlayUnseen(true),
+  animatePageTransitions(true),
+  // Wide-page handling. Split needs
+  // page-list remapping, so it persists here and the engine wires it later;
+  // rotate is live in the paged viewer.
+  dualPageSplitPaged(false),
+  dualPageInvertPaged(false),
+  rotateWidePages(false),
+  rotateWideInvert(false),
+  // KEEP-style extra: show two pages side-by-side in landscape (inert).
+  trueDualPageSpread(false),
+  // Long-strip parity prefs; crop-borders is scoped per mode.
+  webtoonScaleType(WebtoonScaleType.fitScreen),
+  // Strip width cap: % of window (100 = full width) or absolute px
+  // (Houdoku-style unit switch).
+  longStripWidthLimitUsePixels(false),
+  longStripWidthLimitPercent(100),
+  longStripWidthLimitPx(800),
+  cropBordersWebtoon(false),
+  cropBordersGaps(false),
+  smoothAutoScroll(true),
+  readerScrollAmount(ReaderScrollAmount.large),
+  autoScrollIntervalSeconds(3),
+  autoAdvanceIntervalSeconds(5),
+  dualPageSplitWebtoon(false),
+  dualPageInvertWebtoon(false),
+  // Reader General tab (all global).
+  readerBackgroundColor(ReaderBackgroundColor.black),
+  showPageNumber(true),
+  // Sub-toggle of the seekbar chain: keep the vertical side seekbar even on a
+  // landscape phone (SY pref_show_vert_seekbar_landscape).
+  landscapeVerticalSeekbar(false),
+  readerFullscreen(true),
+  // Only meaningful with fullscreen ON; needs platform window attrs (inert).
+  drawUnderCutout(true),
+  readWithLongTap(true),
+  alwaysShowChapterTransition(true),
+  flashOnPageChange(false),
+  // Stored as slider ticks ×100 ms, converted to milliseconds internally.
+  flashDuration(1),
+  flashPageInterval(1),
+  flashColor(FlashColor.black),
+  // Custom filter tab (all global).
+  customBrightness(false),
+  // -75..100. Negatives dim via a black overlay; positives set the
+  // window screen-brightness attr — no Flutter plugin, so persist-but-inert.
+  customBrightnessValue(0),
+  customColorFilter(false),
+  // Packed ARGB int.
+  colorFilterValue(0),
+  colorFilterBlendMode(ColorFilterBlendMode.defaultBlend),
+  grayscale(false),
+  invertedColors(false);
+
+  const DBKeys(this.initial);
+
+  final dynamic initial;
+}
+
+enum DBStoreName { settings }

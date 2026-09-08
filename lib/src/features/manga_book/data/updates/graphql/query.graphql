@@ -1,0 +1,72 @@
+query GetChapterWithMangaPage($after: Cursor, $before: Cursor, $condition: ChapterConditionInput, $filter: ChapterFilterInput, $first: Int, $last: Int, $offset: Int, $order: [ChapterOrderInput!]) {
+  chapters(
+    after: $after
+    before: $before
+    condition: $condition
+    filter: $filter
+    first: $first
+    last: $last
+    offset: $offset
+    order: $order
+  ) {
+    ...ChapterPageWithMangaDto
+  }
+}
+
+
+mutation UpdateLibraryMangas($input: UpdateLibraryMangaInput!) {
+  updateLibraryManga(input: $input) {
+    updateStatus {
+      ...UpdateStatusBaseDto
+    }
+  }
+}
+
+mutation UpdateCategoryMangas($input: UpdateCategoryMangaInput!) {
+  updateCategoryManga(input: $input) {
+    updateStatus {
+      ...UpdateStatusBaseDto
+    }
+  }
+}
+
+mutation StopCategoryUpdate($input: UpdateStopInput!) {
+  updateStop(input: $input) {
+    __typename
+  }
+}
+
+query UpdateStatusDto {
+  updateStatus {
+    ...UpdateStatusDto
+  }
+}
+
+# Lightweight running-only status. The full UpdateStatusDto drags every
+# manga in every job list, which the server can't resolve promptly during a
+# large library update — so the banner's "is it running" signal must come
+# from this cheap shape, not the heavy one.
+query UpdateRunningStatus {
+  updateStatus {
+    ...UpdateStatusBaseDto
+  }
+}
+
+query LastUpdateTimestamp {
+  lastUpdateTimestamp {
+    timestamp
+  }
+}
+
+subscription UpdateStatusChange {
+  updateStatusChanged {
+    ...UpdateStatusDto
+  }
+}
+
+subscription UpdateRunningChange {
+  updateStatusChanged {
+    ...UpdateStatusBaseDto
+  }
+}
+

@@ -1,0 +1,1695 @@
+// Copyright (c) 2026 Contributors to the Suwayomi project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+import 'dart:async';
+import 'dart:math' as math;
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
+
+import '../../../../../../constants/enum.dart';
+import '../../../../../../utils/crash/diagnostics.dart';
+import '../../../../../../widgets/custom_circular_progress_indicator.dart';
+import '../reader_wrapper.dart';
+import 'double_page_view.dart';
+import 'paged_display_window.dart';
+import 'paged_spread_mapping.dart';
+
+enum _DragOwner { page, pager }
+
+/// Captured at the drop, not reconstructed later: a settle writes its
+/// intermediate positions into `_dragOffset`, so the resting offset alone can't
+/// tell an abandoned turn from an unsettled drag.
+class _StrandRecord {
+  const _StrandRecord({
+    required this.target,
+    required this.offset,
+    required this.extent,
+    required this.generation,
+    required this.owner,
+    required this.stop,
+    required this.interrupted,
+    required this.at,
+  });
+
+  final double target;
+  final double offset;
+  final double extent;
+  final int generation;
+  final String owner;
+  final String stop;
+  final bool interrupted;
+  final DateTime at;
+
+  String describe() {
+    final fraction = extent > 0 ? (target / extent) : 0;
+    return 'stop=$stop owner=$owner gen=$generation '
+        'targetPages=${fraction.toStringAsFixed(2)} '
+        'atProgress=${(extent > 0 ? offset / extent : 0).toStringAsFixed(3)} '
+        'interrupted=$interrupted';
+  }
+}
+
+enum _PanDirection { left, right, up, down }
+
+/// Public so the zone geometry can be tested against the overlay.
+enum TapAction { previous, next, menu }
+
+class PagedReaderController {
+  _PagedReaderViewportState? _state;
+
+  void _attach(_PagedReaderViewportState state) => _state = state;
+
+  void _detach(_PagedReaderViewportState state) {
+    if (_state == state) _state = null;
+  }
+
+  void jumpToRaw(int rawIndex) => _state?.jumpToRaw(rawIndex);
+
+  void next() => _state?.moveByCommand(1);
+
+  void previous() => _state?.moveByCommand(-1);
+
+  bool get isAtFirst => _state?.isAtFirstDisplay ?? false;
+
+  bool get isAtLast => _state?.isAtLastDisplay ?? false;
+
+  /// Strands the pager [progress] of a turn from its slot. Test-only, and the
+  /// only way in: every reachable path that abandons a turn now re-rests the
+  /// pager, which is why the reported stranding has never been traced.
+  @visibleForTesting
+  void debugStrand(double progress) => _state?._debugStrand(progress);
+}
+
+/// Continuous multi-chapter paged viewport.
+///
+/// Renders a [PagedDisplayWindow] — the prev/current/next chapters composed
+/// into ONE display list with virtual transition cards between them — so paging
+/// across a chapter boundary is just a page turn inside the same pager (no route
+/// rebuild). The host swaps in a fresh window (append/prepend a chapter) and
+/// this widget re-anchors to the same content on [didUpdateWidget]. Progress is
+/// reported as `(chapterId, raw)` so the host can address the VISIBLE chapter.
+class PagedReaderViewport extends StatefulWidget {
+  const PagedReaderViewport({
+    super.key,
+    required this.controller,
+    required this.window,
+    required this.initialDisplayIndex,
+    required this.axis,
+    required this.reverse,
+    required this.animateTransitions,
+    required this.pageFit,
+    required this.pageSize,
+    required this.pagesAtNaturalSize,
+    required this.mouseScrollSpeed,
+    required this.centerMargin,
+    required this.rotateWide,
+    required this.rotateWideInvert,
+    required this.reversePair,
+    required this.cropBorders,
+    required this.onPageWide,
+    required this.onChapterPageChanged,
+    required this.transitionBuilder,
+    required this.pinchEnabled,
+    required this.doubleTapToZoom,
+    required this.disableZoomIn,
+    required this.disableZoomOut,
+    required this.navigateToPan,
+    this.onIdle,
+    this.onReachedStartEdge,
+    this.onReachedEndEdge,
+    this.clock = DateTime.now,
+  });
+
+  /// Wall clock behind the double-tap window. Injectable because the test
+  /// binding's fake clock moves timers but not [DateTime.now].
+  final DateTime Function() clock;
+
+  final PagedReaderController controller;
+  final PagedDisplayWindow window;
+  final int initialDisplayIndex;
+  final Axis axis;
+  final bool reverse;
+  final bool animateTransitions;
+  final BoxFit pageFit;
+  final Size? pageSize;
+
+  /// Original size — pages rest at 1:1 with their source pixels and pan, rather
+  /// than being fitted to the screen.
+  final bool pagesAtNaturalSize;
+
+  /// How far a mouse wheel notch pans a page that overflows the screen.
+  final double mouseScrollSpeed;
+
+  final CenterMarginType centerMargin;
+  final bool rotateWide;
+  final bool rotateWideInvert;
+  final bool reversePair;
+  final bool cropBorders;
+
+  /// Reports a wide (landscape) page for the given chapter so the host can
+  /// re-chunk that chapter's mapping. Chapter-scoped: two chapters can each
+  /// have a wide page 0.
+  final void Function(int chapterId, int raw, bool isWide) onPageWide;
+
+  /// Reports the current reading position as `(chapterId, furthest raw page)`
+  /// — the read-progress contract, addressed to the visible chapter.
+  final void Function(int chapterId, int raw) onChapterPageChanged;
+
+  /// Builds the card shown for a virtual chapter-boundary transition slot.
+  final Widget Function(TransitionDisplay) transitionBuilder;
+
+  /// Fired whenever the viewport settles onto a page (mount, page turn, jump,
+  /// re-anchor, or a bounce). The host uses this to apply an idle-gated window
+  /// swap without disrupting an in-progress drag/animation.
+  final VoidCallback? onIdle;
+
+  /// The outer edges of the window just bounce; these let the host surface
+  /// start/end-of-manga feedback.
+  final VoidCallback? onReachedStartEdge;
+  final VoidCallback? onReachedEndEdge;
+
+  final bool pinchEnabled;
+  final bool doubleTapToZoom;
+  final bool disableZoomIn;
+  final bool disableZoomOut;
+  final bool navigateToPan;
+
+  @override
+  State<PagedReaderViewport> createState() => _PagedReaderViewportState();
+}
+
+class _PagedReaderViewportState extends State<PagedReaderViewport>
+    with TickerProviderStateMixin {
+  static const double _touchSlop = 12;
+  static const double _tapSlop = 18;
+  static const double _pageTurnThreshold = 0.18;
+  static const double _pageTurnVelocity = 650;
+  static const double _panFlingVelocity = 700;
+  static const double _panFlingDistanceFactor = 0.2;
+  // Android's double-tap timeout. Komikku uses the same value.
+  static const int _doubleTapWindowMs = 300;
+  // Must outlast _doubleTapWindow, or a slow double tap fires both actions.
+  static const Duration _tapDelay = Duration(
+    milliseconds: _doubleTapWindowMs + 20,
+  );
+  static const Duration _doubleTapWindow = Duration(
+    milliseconds: _doubleTapWindowMs,
+  );
+  static const Duration _longPressDelay = Duration(milliseconds: 480);
+  static const Duration _maxSettleDuration = Duration(milliseconds: 180);
+  static const Duration _minSettleDuration = Duration(milliseconds: 70);
+  static const Duration _panFlingDuration = Duration(milliseconds: 400);
+  static const Duration _doubleTapZoomDuration = Duration(milliseconds: 200);
+  static const Curve _settleCurve = Curves.easeOutCubic;
+
+  /// Far above [_pageTurnThreshold] on purpose: that one reads release intent,
+  /// which a stranding gives no evidence of. Below this we snap back — repeating
+  /// a page is recoverable, skipping one is not.
+  static const double _restCommitThreshold = 0.9;
+
+  static const Duration _diagnosticInterval = Duration(seconds: 5);
+  static const int _maxDiagnosticsPerSession = 20;
+
+  late int _displayIndex;
+  late final AnimationController _pageAnimation;
+  late final AnimationController _panAnimation;
+  Animation<double>? _pageTween;
+  Animation<Offset>? _panTween;
+  double _dragOffset = 0;
+
+  /// Bumped whenever a turn in flight is abandoned, so its completion can't
+  /// commit a target that no longer matches where the pager ended up.
+  int _motionGeneration = 0;
+
+  /// Set while a settle owes a completion. Between an animation ending and its
+  /// completion microtask the pager legitimately sits a full page from its slot,
+  /// and the rest guard would pre-empt the commit.
+  bool _commitPending = false;
+
+  /// Recorded at each stop rather than inferred: the touch path stops the
+  /// animation directly, not via [_abandonMotion], so one guess goes stale.
+  String _lastMotionStop = 'none';
+  _StrandRecord? _strand;
+  DateTime? _lastDiagnosticAt;
+  int _diagnosticCount = 0;
+  Size _viewportSize = Size.zero;
+  final Map<int, Offset> _pointers = {};
+  // Keyed by (chapterId, page identity), not display index — a late wide page
+  // re-chunks a chapter's mapping and shifts display indices, and two chapters
+  // can share a raw index, so the chapter disambiguates equal raws.
+  final Map<({int chapterId, PageUnit unit}), _PageZoomController>
+  _zoomControllers = {};
+
+  /// Decoded pixel sizes per page, under the same key as [_zoomControllers] and
+  /// for the same reason.
+  final Map<({int chapterId, PageUnit unit}), Map<int, Size>> _naturalSizes =
+      {};
+
+  Offset? _lastSinglePosition;
+  Offset _totalDrag = Offset.zero;
+  _DragOwner? _dragOwner;
+  bool _multiTouchActive = false;
+  bool _gestureHadMultiplePointers = false;
+  bool _interruptedByAnimation = false;
+
+  /// Set when a pointer is cancelled with others still down, so the rest of
+  /// that gesture can't be mistaken for a tap.
+  bool _suppressTap = false;
+  bool _longPressActive = false;
+  Timer? _longPressTimer;
+  Timer? _singleTapTimer;
+  DateTime? _lastTapAt;
+  Offset? _lastTapPosition;
+  double? _pinchStartDistance;
+
+  /// Which two fingers the pinch baseline was measured from. Swapping a finger
+  /// mid-pinch changes the pair, and the old baseline would jump the zoom.
+  Set<int>? _pinchPointers;
+  double _pinchStartScale = 1;
+  Offset _pinchStartOffset = Offset.zero;
+  Offset? _pinchStartFocal;
+  VelocityTracker? _velocityTracker;
+  int? _velocityPointer;
+  _PageZoomController? _panAnimationTarget;
+  late final AnimationController _zoomAnimation;
+  Animation<double>? _zoomScaleTween;
+  Animation<Offset>? _zoomOffsetTween;
+  _PageZoomController? _zoomAnimationTarget;
+
+  @override
+  void initState() {
+    super.initState();
+    _displayIndex = _clampDisplay(widget.initialDisplayIndex);
+    _pageAnimation = AnimationController(vsync: this);
+    _pageAnimation.addListener(() {
+      setState(() => _dragOffset = _pageTween?.value ?? _dragOffset);
+    });
+    _pageAnimation.addStatusListener((status) {
+      if (status == AnimationStatus.completed ||
+          status == AnimationStatus.dismissed) {
+        _pageTween = null;
+      }
+    });
+    _panAnimation = AnimationController(vsync: this);
+    _panAnimation.addListener(() {
+      final target = _panAnimationTarget;
+      final value = _panTween?.value;
+      if (target == null || value == null) return;
+      target.offset = value;
+    });
+    _panAnimation.addStatusListener((status) {
+      if (status == AnimationStatus.completed ||
+          status == AnimationStatus.dismissed) {
+        _panTween = null;
+        _panAnimationTarget = null;
+      }
+    });
+    _zoomAnimation = AnimationController(vsync: this);
+    _zoomAnimation.addListener(() {
+      final target = _zoomAnimationTarget;
+      final scale = _zoomScaleTween?.value;
+      final offset = _zoomOffsetTween?.value;
+      if (target == null || scale == null || offset == null) return;
+      target.setScaleOffset(scale, offset);
+    });
+    _zoomAnimation.addStatusListener((status) {
+      if (status == AnimationStatus.completed ||
+          status == AnimationStatus.dismissed) {
+        _zoomScaleTween = null;
+        _zoomOffsetTween = null;
+        _zoomAnimationTarget = null;
+      }
+    });
+    widget.controller._attach(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _emitRawPage();
+    });
+  }
+
+  @override
+  void didUpdateWidget(PagedReaderViewport oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller._detach(this);
+      widget.controller._attach(this);
+    }
+    // The host makes a NEW window instance per swap (append/prepend). Re-anchor
+    // to the same content so a prepend that shifts every index doesn't jump the
+    // page the user is reading.
+    if (!identical(oldWidget.window, widget.window)) {
+      _reanchor(oldWidget.window);
+      _clearPendingTap();
+    }
+    _syncZoomBounds();
+  }
+
+  @override
+  void dispose() {
+    widget.controller._detach(this);
+    _pageAnimation.dispose();
+    _panAnimation.dispose();
+    _zoomAnimation.dispose();
+    _longPressTimer?.cancel();
+    _singleTapTimer?.cancel();
+    for (final controller in _zoomControllers.values) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
+
+  void _reanchor(PagedDisplayWindow oldWindow) {
+    // In-flight motion still targets the OLD window.
+    _abandonMotion('reanchor');
+
+    final item = (_displayIndex >= 0 && _displayIndex < oldWindow.length)
+        ? oldWindow.items[_displayIndex]
+        : null;
+    var target = -1;
+    if (item is SpreadDisplay) {
+      target = widget.window.chapterRawToDisplay(
+        item.chapterId,
+        item.entry.first.raw,
+      );
+    } else if (item is TransitionDisplay) {
+      // Anchor to the chapter being ENTERED (its first page). For an
+      // end-of-window "next chapter" card that doesn't know its target yet, fall
+      // back to the LAST page of the chapter just finished — never its first,
+      // which would throw the reader back to that chapter's start.
+      if (item.toChapterId != null) {
+        target = widget.window.firstDisplayOf(item.toChapterId!);
+      }
+      if (target < 0 && item.fromChapterId != null) {
+        target = widget.window.lastDisplayOf(item.fromChapterId!);
+      }
+    }
+    _displayIndex = target >= 0
+        ? target
+        : _clampDisplay(widget.initialDisplayIndex);
+    _dragOffset = 0;
+    // Runs inside didUpdateWidget; a sync emit would setState an ancestor
+    // mid-build. Defer (like commitPendingIfAny).
+    Future.microtask(() {
+      if (mounted) _emitRawPage();
+    });
+  }
+
+  /// Abandons whatever is still moving — a turn, a pan fling, a zoom. A turn
+  /// left running writes its old position over wherever we land next, then
+  /// finishes by committing the page IT was aiming at; a zoom left running
+  /// keeps scaling a page that is no longer the one on screen.
+  void _abandonMotion(String reason) {
+    _motionGeneration++;
+    // Nothing takes over here, so no completion is owed — leaving this set would
+    // mute the rest guard for good.
+    _commitPending = false;
+    _lastMotionStop = reason;
+    _pageAnimation.stop();
+    _pageTween = null;
+    _stopPanAnimation();
+    _stopZoomAnimation();
+  }
+
+  void jumpToRaw(int rawIndex) {
+    _abandonMotion('seek');
+    final chapterId = _currentChapterId();
+    final target = chapterId == null
+        ? -1
+        : widget.window.chapterRawToDisplay(chapterId, rawIndex);
+    if (target < 0 || target == _displayIndex) {
+      // _abandonMotion may have killed a settle whose commit never ran; a jump
+      // resolving to the current page must still land the pager back on it.
+      if (_dragOffset != 0) setState(() => _dragOffset = 0);
+      _emitRawPage();
+      return;
+    }
+    _clearPendingTap();
+    setState(() {
+      _displayIndex = target;
+      _dragOffset = 0;
+    });
+    _emitRawPage();
+  }
+
+  void moveByCommand(int delta) {
+    if (delta == 0 || _pageAnimation.isAnimating) return;
+    _abandonMotion('command');
+    if (widget.navigateToPan && _panCurrentPage(_commandPanDirection(delta))) {
+      return;
+    }
+    _animateToDisplay(_displayIndex + delta);
+  }
+
+  bool get isAtFirstDisplay => _displayIndex <= 0;
+
+  bool get isAtLastDisplay =>
+      !widget.window.isEmpty && _displayIndex >= widget.window.length - 1;
+
+  int _clampDisplay(int index) {
+    if (widget.window.isEmpty) return 0;
+    return index.clamp(0, widget.window.length - 1).toInt();
+  }
+
+  void _notifyIdle() => widget.onIdle?.call();
+
+  void _emitRawPage() {
+    if (widget.window.isEmpty) {
+      _notifyIdle();
+      return;
+    }
+    final progress = widget.window.displayToChapterProgressRaw(_displayIndex);
+    if (progress != null) {
+      widget.onChapterPageChanged(progress.chapterId, progress.raw);
+    }
+    _notifyIdle();
+  }
+
+  /// True when [index] is a transition card or out of range — no zoom / pages /
+  /// long-press there.
+  bool _isTransitionSlot(int index) {
+    if (index < 0 || index >= widget.window.length) return true;
+    return widget.window.items[index] is! SpreadDisplay;
+  }
+
+  /// The chapter shown at the current slot; scans outward when the slot is a
+  /// transition card so a seek still resolves to a chapter.
+  int? _currentChapterId() {
+    final here = widget.window.displayToChapterRaw(_displayIndex);
+    if (here != null) return here.chapterId;
+    for (var d = 1; d < widget.window.length; d++) {
+      final before = widget.window.displayToChapterRaw(_displayIndex - d);
+      if (before != null) return before.chapterId;
+      final after = widget.window.displayToChapterRaw(_displayIndex + d);
+      if (after != null) return after.chapterId;
+    }
+    return null;
+  }
+
+  bool _hasDisplayEntry(int index) =>
+      index >= 0 && index < widget.window.length;
+
+  void _syncZoomBounds() {
+    for (final controller in _zoomControllers.values) {
+      controller.configure(
+        minMultiplier: _minMultiplier,
+        maxMultiplier: _maxMultiplier,
+        viewport: _viewportSize,
+      );
+    }
+  }
+
+  /// Original size can't zoom out past 1:1 — that's what the setting means,
+  /// and it's Mihon's rule too (SCALE_TYPE_ORIGINAL_SIZE pins minimum zoom).
+  double get _minMultiplier =>
+      widget.disableZoomOut || widget.pagesAtNaturalSize ? 1 : 0.5;
+
+  double get _maxMultiplier => widget.disableZoomIn ? 1 : 5;
+
+  int get _axisSign =>
+      widget.axis == Axis.horizontal && widget.reverse ? -1 : 1;
+
+  double get _axisExtent => widget.axis == Axis.horizontal
+      ? _viewportSize.width
+      : _viewportSize.height;
+
+  _PageZoomController? get _currentZoomOrNull {
+    if (_isTransitionSlot(_displayIndex)) return null;
+    return _zoomControllerFor(_displayIndex)..configure(
+      minMultiplier: _minMultiplier,
+      maxMultiplier: _maxMultiplier,
+      viewport: _viewportSize,
+    );
+  }
+
+  _PageZoomController _zoomControllerFor(int displayIndex) {
+    final item = widget.window.items[displayIndex] as SpreadDisplay;
+    return _zoomControllers.putIfAbsent(
+      (chapterId: item.chapterId, unit: item.entry.first),
+      () => _PageZoomController(
+        minMultiplier: _minMultiplier,
+        maxMultiplier: _maxMultiplier,
+      ),
+    );
+  }
+
+  void _onPointerDown(PointerDownEvent event) {
+    // A touch that lands mid-settle is an interrupt, not a nav tap — remember
+    // so the ensuing tap is swallowed (the in-flight turn still commits on
+    // cancel, so we must not also fire a second tap action on top of it).
+    if (_pointers.isEmpty) {
+      _interruptedByAnimation =
+          _pageAnimation.isAnimating ||
+          _panAnimation.isAnimating ||
+          _zoomAnimation.isAnimating;
+    }
+    if (_pageAnimation.isAnimating) _lastMotionStop = 'touch';
+    _pageAnimation.stop();
+    _stopPanAnimation();
+    _stopZoomAnimation();
+    _singleTapTimer?.cancel();
+    _pointers[event.pointer] = event.localPosition;
+    if (_pointers.length == 1) {
+      _gestureHadMultiplePointers = false;
+      _lastSinglePosition = event.localPosition;
+      _totalDrag = Offset.zero;
+      _dragOwner = null;
+      _velocityPointer = event.pointer;
+      _velocityTracker = VelocityTracker.withKind(event.kind)
+        ..addPosition(event.timeStamp, event.localPosition);
+      _longPressActive = false;
+      _startLongPressTimer(event.localPosition);
+      return;
+    }
+    _gestureHadMultiplePointers = true;
+    _cancelLongPress(cancelled: true);
+    _multiTouchActive = true;
+    _velocityPointer = null;
+    _velocityTracker = null;
+    if (_pointers.length == 2) {
+      // A gesture is either a turn or a zoom, decided once. A second finger
+      // landing mid-turn must not seize it — that abandons the turn partway and
+      // leaves the pager between two pages.
+      if (_dragOwner == _DragOwner.pager || _dragOffset != 0) return;
+      final zoom = _currentZoomOrNull;
+      if (zoom == null) return;
+      _capturePinchBaseline(zoom);
+      _dragOwner = _DragOwner.page;
+    }
+  }
+
+  void _onPointerMove(PointerMoveEvent event) {
+    final previous = _pointers[event.pointer];
+    if (previous == null) return;
+    _pointers[event.pointer] = event.localPosition;
+    if (_velocityPointer == event.pointer) {
+      _velocityTracker?.addPosition(event.timeStamp, event.localPosition);
+    }
+
+    if (_pointers.length >= 2) {
+      _gestureHadMultiplePointers = true;
+      _cancelLongPress(cancelled: true);
+      _handlePinch();
+      return;
+    }
+
+    final last = _lastSinglePosition;
+    if (last == null) return;
+    final delta = event.localPosition - last;
+    _lastSinglePosition = event.localPosition;
+    _totalDrag += delta;
+    final previousOwner = _dragOwner;
+
+    if (_longPressActive) {
+      ReaderInputScope.maybeOf(
+        context,
+      )?.onLongPressMoveUpdate?.call(event.localPosition);
+      return;
+    }
+
+    if (_totalDrag.distance > _tapSlop) {
+      _longPressTimer?.cancel();
+    }
+
+    if (_dragOwner == null && _totalDrag.distance > _touchSlop) {
+      // Claim the drag only if the page can pan along the axis being swiped —
+      // otherwise a bit of vertical drift lets a page with only vertical
+      // overflow swallow a swipe meant to turn it.
+      if (_currentZoomOrNull?.canPanAlong(_totalDrag) ?? false) {
+        _dragOwner = _DragOwner.page;
+      } else {
+        if (!_isMainAxisDrag(_totalDrag)) return;
+        _dragOwner = _DragOwner.pager;
+      }
+    }
+
+    switch (_dragOwner) {
+      case _DragOwner.page:
+        final pageDelta = previousOwner == null ? _totalDrag : delta;
+        final zoom = _currentZoomOrNull;
+        if (zoom == null) {
+          final dragDelta = previousOwner == null
+              ? _mainAxisDelta(_totalDrag)
+              : _mainAxisDelta(delta);
+          _dragOwner = _DragOwner.pager;
+          _applyPagerDragDelta(dragDelta);
+        } else if (!zoom.panBy(pageDelta) && _isMainAxisDrag(_totalDrag)) {
+          final dragDelta = previousOwner == null
+              ? _mainAxisDelta(_totalDrag)
+              : _mainAxisDelta(delta);
+          _dragOwner = _DragOwner.pager;
+          _applyPagerDragDelta(dragDelta);
+        }
+        break;
+      case _DragOwner.pager:
+        final dragDelta = previousOwner == null
+            ? _mainAxisDelta(_totalDrag)
+            : _mainAxisDelta(delta);
+        _applyPagerDragDelta(dragDelta);
+        break;
+      case null:
+        break;
+    }
+  }
+
+  void _onPointerUp(PointerUpEvent event) {
+    final releaseVelocity = _releaseVelocity(event);
+    _pointers.remove(event.pointer);
+    if (_longPressActive) {
+      _finishLongPress();
+      // This return skips the displaced-pager net further down.
+      _enforcePagerRest();
+      return;
+    }
+    _longPressTimer?.cancel();
+
+    if (_multiTouchActive) {
+      if (_pointers.isEmpty) {
+        _settleAfterGesture(releaseVelocity);
+        _resetGesture();
+      } else if (_pointers.length == 1) {
+        // Dropped back to one finger — resume single-touch from it. With 2+
+        // still down we stay in multi-touch (and `.single` would throw).
+        _lastSinglePosition = _pointers.values.single;
+      }
+      return;
+    }
+
+    if (_pointers.length == 1) {
+      _lastSinglePosition = _pointers.values.single;
+      return;
+    }
+
+    if (_dragOwner == _DragOwner.pager) {
+      _settleDrag(releaseVelocity: _mainAxisDelta(releaseVelocity));
+    } else if (_dragOwner == _DragOwner.page) {
+      _settlePagePan(releaseVelocity);
+    } else if (_totalDrag.distance <= _tapSlop) {
+      if (!_interruptedByAnimation && !_suppressTap) {
+        _handleTap(event.localPosition);
+      }
+    }
+    // A page-owned gesture (or swallowed tap) can end with the pager still
+    // displaced by an abandoned turn — never let it rest between slots.
+    if (_dragOwner != _DragOwner.pager &&
+        _dragOffset != 0 &&
+        !_pageAnimation.isAnimating) {
+      _settleDrag();
+    }
+
+    _resetGesture();
+  }
+
+  /// Wheel pans the page while it has room, then turns once it runs out. A
+  /// page fitted to the screen has no room, so a notch turns it straight away —
+  /// the WebUI can get away with scroll-only because the browser gives it a
+  /// scrollable viewer; here that would leave the wheel doing nothing.
+  void _onPointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) return;
+    if (event.kind != PointerDeviceKind.mouse) return;
+    final dx = event.scrollDelta.dx;
+    final dy = event.scrollDelta.dy;
+    final raw = dy != 0 ? dy : dx;
+    if (raw == 0) return;
+    final zoom = _currentZoomOrNull;
+    final pan = Offset(-dx, -dy) * widget.mouseScrollSpeed;
+    if (zoom != null && pan != Offset.zero && zoom.panBy(pan)) return;
+    moveByCommand(raw > 0 ? 1 : -1);
+  }
+
+  void _onPointerCancel(PointerCancelEvent event) {
+    _pointers.remove(event.pointer);
+    _clearPendingTap();
+    _finishLongPress(cancelled: true);
+    if (_dragOwner == _DragOwner.pager || _dragOffset != 0) _settleDrag();
+    if (_pointers.isNotEmpty) {
+      // Fingers are still down. Wiping them here would make the next release
+      // look like a fresh tap and turn the page.
+      _suppressTap = true;
+      _dragOwner = null;
+      _totalDrag = Offset.zero;
+      _lastSinglePosition = _pointers.values.first;
+      return;
+    }
+    _resetGesture();
+  }
+
+  /// Lands whatever the gesture left mid-move. A pinch that resolves into a
+  /// one-finger drag still carries the pager, and letting go has to settle it
+  /// or it stays parked between two pages for good.
+  void _settleAfterGesture(Offset releaseVelocity) {
+    if (_dragOwner == _DragOwner.page) {
+      _settlePagePan(releaseVelocity);
+    } else if (_dragOwner == _DragOwner.pager || _dragOffset != 0) {
+      _settleDrag(releaseVelocity: _mainAxisDelta(releaseVelocity));
+    }
+  }
+
+  void _resetGesture() {
+    _pointers.clear();
+    _lastSinglePosition = null;
+    _totalDrag = Offset.zero;
+    _dragOwner = null;
+    _multiTouchActive = false;
+    _gestureHadMultiplePointers = false;
+    _interruptedByAnimation = false;
+    _suppressTap = false;
+    _pinchStartDistance = null;
+    _pinchPointers = null;
+    _pinchStartFocal = null;
+    _velocityPointer = null;
+    _velocityTracker = null;
+  }
+
+  void _startLongPressTimer(Offset position) {
+    if (_isTransitionSlot(_displayIndex)) return;
+    // Nothing consumes a long press: don't run a timer that would swallow the
+    // gesture and, with it, the tap that was meant to turn the page.
+    if (ReaderInputScope.maybeOf(context)?.onLongPressStart == null) return;
+    _longPressTimer?.cancel();
+    _longPressTimer = Timer(_longPressDelay, () {
+      if (!mounted ||
+          _gestureHadMultiplePointers ||
+          _pointers.length != 1 ||
+          _totalDrag.distance > _tapSlop) {
+        return;
+      }
+      _longPressActive = true;
+      ReaderInputScope.maybeOf(context)?.onLongPressStart?.call(position);
+    });
+  }
+
+  void _cancelLongPress({bool cancelled = false}) {
+    _longPressTimer?.cancel();
+    _longPressTimer = null;
+    _finishLongPress(cancelled: cancelled);
+  }
+
+  void _finishLongPress({bool cancelled = false}) {
+    if (!_longPressActive) return;
+    _longPressActive = false;
+    final callbacks = ReaderInputScope.maybeOf(context);
+    if (cancelled) {
+      callbacks?.onLongPressCancel?.call();
+    } else {
+      callbacks?.onLongPressEnd?.call();
+    }
+  }
+
+  void _claimLongPressArena() {}
+
+  /// Re-bases the pinch on the fingers currently down, so scale and pan are
+  /// measured from where they are now rather than a pair that has since changed.
+  void _capturePinchBaseline(_PageZoomController zoom) {
+    final points = _pointers.values.toList();
+    if (points.length < 2) return;
+    _pinchPointers = _pointers.keys.toSet();
+    _pinchStartDistance = (points[0] - points[1]).distance;
+    _pinchStartFocal = Offset.lerp(points[0], points[1], 0.5);
+    _pinchStartScale = zoom.scale;
+    _pinchStartOffset = zoom.offset;
+  }
+
+  void _handlePinch() {
+    if (!widget.pinchEnabled || widget.disableZoomIn) return;
+    // The turn owns this gesture; extra fingers ride along without zooming.
+    if (_dragOwner == _DragOwner.pager) return;
+    final zoom = _currentZoomOrNull;
+    if (zoom == null) return;
+    if (_pointers.length == 2 &&
+        !setEquals(_pinchPointers, _pointers.keys.toSet())) {
+      _capturePinchBaseline(zoom);
+    }
+    final startDistance = _pinchStartDistance;
+    final startFocal = _pinchStartFocal;
+    if (startDistance == null || startDistance == 0 || startFocal == null) {
+      return;
+    }
+    final points = _pointers.values.toList();
+    final distance = (points[0] - points[1]).distance;
+    final focal = Offset.lerp(points[0], points[1], 0.5)!;
+    final scale = (_pinchStartScale * distance / startDistance)
+        .clamp(zoom.minScale, zoom.maxScale)
+        .toDouble();
+    zoom
+      ..offset = _pinchStartOffset + (focal - startFocal)
+      ..setScaleAround(scale, focal);
+  }
+
+  // A tap left armed across a page change can act on, or zoom, whichever
+  // page replaced the one it landed on.
+  void _clearPendingTap() {
+    _singleTapTimer?.cancel();
+    _singleTapTimer = null;
+    _lastTapAt = null;
+    _lastTapPosition = null;
+  }
+
+  void _handleTap(Offset position) {
+    // No double-tap-to-zoom → nothing to disambiguate, so act immediately
+    // instead of holding every tap for _tapDelay (a felt page-turn latency).
+    if (!widget.doubleTapToZoom || widget.disableZoomIn) {
+      _handleSingleTap(position);
+      return;
+    }
+
+    final now = widget.clock();
+    final previousTapAt = _lastTapAt;
+    final previousTapPosition = _lastTapPosition;
+    _clearPendingTap();
+
+    if (previousTapAt != null &&
+        now.difference(previousTapAt) <= _doubleTapWindow &&
+        previousTapPosition != null &&
+        (previousTapPosition - position).distance <= _tapSlop * 2) {
+      _handleDoubleTap(position);
+      return;
+    }
+
+    // Too far apart to pair: fire the stranded tap now. Must happen before
+    // arming this one, since acting on it can change the page and clear state.
+    if (previousTapAt != null && previousTapPosition != null) {
+      _handleSingleTap(previousTapPosition);
+    }
+
+    _lastTapAt = now;
+    _lastTapPosition = position;
+    _singleTapTimer = Timer(_tapDelay, () {
+      _clearPendingTap();
+      if (!mounted) return;
+      _handleSingleTap(position);
+    });
+  }
+
+  void _handleDoubleTap(Offset position) {
+    if (!widget.doubleTapToZoom || widget.disableZoomIn) {
+      _handleSingleTap(position);
+      return;
+    }
+    final zoom = _currentZoomOrNull;
+    if (zoom == null) {
+      _handleSingleTap(position);
+      return;
+    }
+    final target = zoom.scale > zoom.baseScale + 0.05
+        ? zoom.baseScale
+        : math.min(zoom.baseScale * 2, zoom.maxScale);
+    _animateZoomTo(zoom, zoom.scaleAroundTarget(target, position));
+  }
+
+  /// Animate a page's zoom to a target scale/offset (double-tap), so it eases
+  /// in instead of snapping — matching the webtoon reader's zoom feel.
+  void _animateZoomTo(
+    _PageZoomController zoom,
+    ({double scale, Offset offset}) end,
+  ) {
+    // reset() drives the controller to `dismissed`, which fires the status
+    // listener that clears these tweens — so it has to run BEFORE we build them.
+    // A second double-tap arrives with the controller sitting at `completed`, so
+    // resetting after assignment would null the tweens it just created and the
+    // zoom would never animate (page stuck zoomed).
+    _zoomAnimation
+      ..stop()
+      ..reset();
+    _zoomAnimationTarget = zoom;
+    _zoomScaleTween = Tween<double>(begin: zoom.scale, end: end.scale).animate(
+      CurvedAnimation(parent: _zoomAnimation, curve: Curves.easeOutCubic),
+    );
+    _zoomOffsetTween = Tween<Offset>(begin: zoom.offset, end: end.offset)
+        .animate(
+          CurvedAnimation(parent: _zoomAnimation, curve: Curves.easeOutCubic),
+        );
+    _zoomAnimation
+      ..duration = _doubleTapZoomDuration
+      ..forward();
+  }
+
+  void _handleSingleTap(Offset position) {
+    final callbacks = ReaderInputScope.maybeOf(context);
+    if (callbacks == null) return;
+    switch (_tapActionFor(position, _viewportSize, callbacks)) {
+      case TapAction.previous:
+        callbacks.onPrevious();
+        break;
+      case TapAction.next:
+        callbacks.onNext();
+        break;
+      case TapAction.menu:
+        callbacks.onTap();
+        break;
+    }
+  }
+
+  TapAction _tapActionFor(
+    Offset position,
+    Size size,
+    ReaderInputCallbacks callbacks,
+  ) => tapActionForZone(
+    position: position,
+    size: size,
+    layout: callbacks.navigationLayout,
+    tapInvert: callbacks.tapInvert,
+    smallerTapZones: callbacks.smallerTapZones,
+  );
+
+  Offset _releaseVelocity(PointerUpEvent event) {
+    if (_velocityPointer != event.pointer) return Offset.zero;
+    _velocityTracker?.addPosition(event.timeStamp, event.localPosition);
+    final velocity = _velocityTracker?.getVelocity().pixelsPerSecond;
+    return velocity ?? Offset.zero;
+  }
+
+  void _settleDrag({double releaseVelocity = 0}) {
+    if (_axisExtent <= 0) return;
+    final signedDistance = -_dragOffset * _axisSign;
+    final signedVelocity = -releaseVelocity * _axisSign;
+    if (signedDistance.abs() > _touchSlop &&
+        signedVelocity.abs() > _pageTurnVelocity) {
+      _animateToDisplay(_displayIndex + (signedVelocity > 0 ? 1 : -1));
+      return;
+    }
+
+    final progress = signedDistance / _pageTurnExtent;
+    if (progress > _pageTurnThreshold) {
+      _animateToDisplay(_displayIndex + 1);
+      return;
+    }
+    if (progress < -_pageTurnThreshold) {
+      _animateToDisplay(_displayIndex - 1);
+      return;
+    }
+    _animateOffsetTo(0);
+  }
+
+  // One display slot (single page, spread, or transition card) always travels a
+  // full viewport, so the turn threshold is the full extent — halving it for
+  // spreads made them commit a turn at half the drag distance.
+  double get _pageTurnExtent => _axisExtent;
+
+  double _mainAxisDelta(Offset offset) =>
+      widget.axis == Axis.horizontal ? offset.dx : offset.dy;
+
+  double _crossAxisDelta(Offset offset) =>
+      widget.axis == Axis.horizontal ? offset.dy : offset.dx;
+
+  bool _isMainAxisDrag(Offset offset) =>
+      _mainAxisDelta(offset).abs() >= _crossAxisDelta(offset).abs();
+
+  void _settlePagePan(Offset releaseVelocity) {
+    final zoom = _currentZoomOrNull;
+    if (zoom == null) return;
+    final speed = releaseVelocity.distance;
+    if (!zoom.isActive || speed < _panFlingVelocity) return;
+
+    final maxDistance = _viewportSize.longestSide * 0.9;
+    final distance = math.min(speed * _panFlingDistanceFactor, maxDistance);
+    final factor = distance / speed;
+    final target = zoom.clampOffset(
+      zoom.offset + releaseVelocity.scale(factor, factor),
+    );
+    final travel = (target - zoom.offset).distance;
+    if (travel < 1) return;
+
+    _panAnimation
+      ..stop()
+      ..duration = _panFlingDuration
+      ..reset();
+    _panAnimationTarget = zoom;
+    _panTween = Tween<Offset>(
+      begin: zoom.offset,
+      end: target,
+    ).animate(CurvedAnimation(parent: _panAnimation, curve: Curves.decelerate));
+    _panAnimation.forward();
+  }
+
+  void _stopPanAnimation() {
+    if (!_panAnimation.isAnimating) return;
+    _panAnimation.stop();
+    _panTween = null;
+    _panAnimationTarget = null;
+  }
+
+  void _stopZoomAnimation() {
+    if (!_zoomAnimation.isAnimating) return;
+    _zoomAnimation.stop();
+    _zoomScaleTween = null;
+    _zoomOffsetTween = null;
+    _zoomAnimationTarget = null;
+  }
+
+  void _animateToDisplay(int targetDisplay) {
+    // The window's OUTER edges just bounce (the host surfaces start/end-of-manga
+    // feedback). Interior transition cards are ordinary slots and page normally.
+    if (targetDisplay < 0) {
+      widget.onReachedStartEdge?.call();
+      _animateOffsetTo(0);
+      return;
+    }
+    if (targetDisplay >= widget.window.length) {
+      widget.onReachedEndEdge?.call();
+      _animateOffsetTo(0);
+      return;
+    }
+    final delta = targetDisplay - _displayIndex;
+    if (delta == 0) {
+      _animateOffsetTo(0);
+      return;
+    }
+    final targetOffset = -delta * _axisSign * _axisExtent;
+    _animateOffsetTo(
+      targetOffset,
+      onComplete: () {
+        if (!mounted) return;
+        setState(() {
+          _displayIndex = targetDisplay;
+          _dragOffset = 0;
+        });
+        _emitRawPage();
+      },
+    );
+  }
+
+  void _applyPagerDragDelta(double dragDelta) {
+    setState(() {
+      _dragOffset += dragDelta;
+    });
+  }
+
+  void _animateOffsetTo(double target, {VoidCallback? onComplete}) {
+    // Starting a turn retires the previous one: stopping it below fires its
+    // completion, which would otherwise commit the page it was aiming at.
+    _motionGeneration++;
+    final generation = _motionGeneration;
+    final duration = _settleDuration(target);
+    if (duration == Duration.zero || _axisExtent <= 0) {
+      setState(() => _dragOffset = target == 0 ? 0 : target);
+      onComplete?.call();
+      // onComplete may re-anchor/tear down — don't setState afterwards if gone.
+      if (target != 0 && mounted) setState(() => _dragOffset = 0);
+      if (target == 0) _notifyIdle();
+      return;
+    }
+    _pageAnimation
+      ..stop()
+      ..duration = duration
+      ..reset();
+    _pageTween = Tween<double>(
+      begin: _dragOffset,
+      end: target,
+    ).animate(CurvedAnimation(parent: _pageAnimation, curve: _settleCurve));
+    _commitPending = true;
+    _pageAnimation.forward().whenCompleteOrCancel(() {
+      if (generation != _motionGeneration) {
+        // Only a strand if nothing took over: a turn superseded by the next one
+        // is ordinary, and logging it would bury the real event.
+        if (!_commitPending && _dragOffset != 0) {
+          _recordStrand(target: target, generation: generation);
+          _scheduleRestCheck();
+        }
+        return;
+      }
+      _commitPending = false;
+      if (!mounted) return;
+      onComplete?.call();
+      if (target == 0) {
+        setState(() => _dragOffset = 0);
+        _notifyIdle();
+      }
+    });
+  }
+
+  void _debugStrand(double progress) {
+    _motionGeneration++;
+    _commitPending = false;
+    _lastMotionStop = 'debug';
+    _pageAnimation.stop();
+    _pageTween = null;
+    setState(() => _dragOffset = -progress * _axisSign * _axisExtent);
+  }
+
+  void _recordStrand({required double target, required int generation}) {
+    _strand = _StrandRecord(
+      target: target,
+      offset: _dragOffset,
+      extent: _axisExtent,
+      generation: generation,
+      owner: _dragOwner?.name ?? 'none',
+      stop: _lastMotionStop,
+      interrupted: _interruptedByAnimation,
+      at: DateTime.now(),
+    );
+  }
+
+  void _scheduleRestCheck() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _enforcePagerRest();
+    });
+  }
+
+  /// The pager must never come to rest between two slots. Enforced here rather
+  /// than at each site that can abandon a turn, so a stranding heals whatever
+  /// caused it — including causes we have not found.
+  void _enforcePagerRest() {
+    if (_dragOffset == 0) return;
+    if (_pointers.isNotEmpty) return;
+    if (_pageAnimation.isAnimating) return;
+    if (_commitPending) return;
+
+    if (_axisExtent <= 0) {
+      // Keeping a pixel offset with no extent lets a later, narrower layout read
+      // it as a much larger fraction of a page.
+      _logRestRecovery(progress: 0, action: 'zero-extent');
+      setState(() => _dragOffset = 0);
+      return;
+    }
+
+    final progress = -_dragOffset * _axisSign / _axisExtent;
+    if (progress.abs() >= _restCommitThreshold) {
+      _logRestRecovery(progress: progress, action: 'commit');
+      _animateToDisplay(_displayIndex + (progress > 0 ? 1 : -1));
+      return;
+    }
+    _logRestRecovery(progress: progress, action: 'snapback');
+    _animateOffsetTo(0);
+  }
+
+  void _logRestRecovery({required double progress, required String action}) {
+    final now = DateTime.now();
+    final last = _lastDiagnosticAt;
+    if (_diagnosticCount >= _maxDiagnosticsPerSession) return;
+    if (last != null && now.difference(last) < _diagnosticInterval) return;
+    _lastDiagnosticAt = now;
+    _diagnosticCount++;
+
+    final strand = _strand;
+    final held = strand == null
+        ? -1
+        : now.difference(strand.at).inMilliseconds;
+    recordDiagnostic(
+      '[${now.toIso8601String()}] reader-rest: action=$action '
+      'progress=${progress.toStringAsFixed(3)} '
+      'index=$_displayIndex axis=${widget.axis.name} '
+      'reverse=${widget.reverse} zoom=${_currentZoomOrNull?.isActive ?? false} '
+      'spread=${widget.window.items[_clampDisplay(_displayIndex)] is SpreadDisplay} '
+      'heldMs=$held ${strand?.describe() ?? 'strand=none'}\n',
+    );
+  }
+
+  Duration _settleDuration(double target) {
+    if (!widget.animateTransitions || _axisExtent <= 0) return Duration.zero;
+    final remaining = ((target - _dragOffset).abs() / _axisExtent).clamp(
+      0.0,
+      1.0,
+    );
+    final minMs = _minSettleDuration.inMilliseconds;
+    final maxMs = _maxSettleDuration.inMilliseconds;
+    return Duration(
+      milliseconds: minMs + ((maxMs - minMs) * remaining).round(),
+    );
+  }
+
+  _PanDirection _commandPanDirection(int delta) {
+    if (widget.axis == Axis.vertical) {
+      return delta > 0 ? _PanDirection.down : _PanDirection.up;
+    }
+    if (delta > 0) {
+      return widget.reverse ? _PanDirection.left : _PanDirection.right;
+    }
+    return widget.reverse ? _PanDirection.right : _PanDirection.left;
+  }
+
+  bool _panCurrentPage(_PanDirection direction) {
+    final zoom = _currentZoomOrNull;
+    if (zoom == null) return false;
+    if (!zoom.canPan(direction)) return false;
+    return zoom.panByDirection(direction);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.window.isEmpty) {
+      return const Center(child: CenterSorayomiShimmerIndicator());
+    }
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final nextViewport = Size(constraints.maxWidth, constraints.maxHeight);
+        final resized = nextViewport != _viewportSize;
+        _viewportSize = nextViewport;
+        _syncZoomBounds();
+        if (resized) _republishVisibleMetrics();
+        // Catch-all: a stranding from a path we never found heals next frame.
+        if (_dragOffset != 0) _scheduleRestCheck();
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          // Only claim the arena when a long press has somewhere to go.
+          onLongPress: ReaderInputScope.maybeOf(context)?.onLongPressStart ==
+                  null
+              ? null
+              : _claimLongPressArena,
+          child: Listener(
+            behavior: HitTestBehavior.opaque,
+            onPointerDown: _onPointerDown,
+            onPointerMove: _onPointerMove,
+            onPointerUp: _onPointerUp,
+            onPointerCancel: _onPointerCancel,
+            onPointerSignal: _onPointerSignal,
+            child: ClipRect(
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  for (final index in _visibleDisplayIndexes())
+                    _PositionedDisplayEntry(
+                      axis: widget.axis,
+                      offset: _entryOffset(index),
+                      child: _buildDisplayEntry(
+                        index,
+                        active: index == _displayIndex,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Iterable<int> _visibleDisplayIndexes() sync* {
+    for (var index = _displayIndex - 1; index <= _displayIndex + 1; index++) {
+      if (_hasDisplayEntry(index)) yield index;
+    }
+  }
+
+  double _entryOffset(int index) =>
+      (index - _displayIndex) * _axisExtent * _axisSign + _dragOffset;
+
+  Widget _buildDisplayEntry(int index, {required bool active}) {
+    final item = widget.window.items[index];
+    if (item is TransitionDisplay) {
+      return widget.transitionBuilder(item);
+    }
+    final spread = item as SpreadDisplay;
+    // Clipped to its own slot: a page rendered larger than the screen (Original
+    // size) must not paint over the pages either side of it.
+    return ClipRect(
+      child: _ZoomedDisplayEntry(
+        controller: _zoomControllerFor(index),
+        // Only the focused page applies its zoom/pan transform. A neighbor still
+        // carries whatever zoom/pan it was left with; applying that off-screen
+        // drags it partly back into view, overlapping the current page.
+        active: active,
+        child: DoublePageView(
+          entry: spread.entry,
+          pages: widget.window.pagesAt(index)!,
+          pageFit: widget.pageFit,
+          pageSize: widget.pageSize,
+          centerMargin: widget.centerMargin,
+          rotateWide: widget.rotateWide,
+          rotateWideInvert: widget.rotateWideInvert,
+          reversePair: widget.reversePair,
+          onPageWide: (raw, wide) =>
+              widget.onPageWide(spread.chapterId, raw, wide),
+          onNaturalSize: (raw, natural) =>
+              _recordNaturalSize(index, spread, raw, natural),
+          naturalSize: widget.pagesAtNaturalSize,
+          cropBorders: widget.cropBorders,
+        ),
+      ),
+    );
+  }
+
+  /// Feeds the decoded page size to its zoom controller, so pan bounds match
+  /// the page's real extent instead of an assumed full-viewport size.
+  void _recordNaturalSize(
+    int index,
+    SpreadDisplay spread,
+    int raw,
+    Size natural,
+  ) {
+    // An already-decoded page reports during build (the image stream fires its
+    // listener synchronously on a cache hit); notifying the zoom then would
+    // rebuild mid-build. Publish after the frame instead.
+    if (SchedulerBinding.instance.schedulerPhase ==
+        SchedulerPhase.persistentCallbacks) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _recordNaturalSize(index, spread, raw, natural);
+      });
+      return;
+    }
+    if (natural.isEmpty || _viewportSize.isEmpty) return;
+    final key = (chapterId: spread.chapterId, unit: spread.entry.first);
+    final naturals = _naturalSizes.putIfAbsent(key, () => {});
+    // A re-chunk can turn a pair into a solo page under the same key; keeping
+    // the dropped page's size would leave the survivor with pair-sized bounds.
+    final belongs = {
+      spread.entry.first.raw,
+      if (spread.entry.second != null) spread.entry.second!.raw,
+    };
+    final stale = naturals.keys.where((r) => !belongs.contains(r)).toList();
+    naturals.removeWhere((r, _) => !belongs.contains(r));
+    if (naturals[raw] == natural && stale.isEmpty) return;
+    naturals[raw] = natural;
+
+    _publishPageMetrics(index, spread);
+  }
+
+  /// Recomputes a page's laid-out size from what has decoded so far. Depends on
+  /// the viewport, so it has to run again after a rotation or resize — the
+  /// image doesn't decode a second time to trigger it.
+  void _publishPageMetrics(int index, SpreadDisplay spread) {
+    final naturals =
+        _naturalSizes[(chapterId: spread.chapterId, unit: spread.entry.first)];
+    if (naturals == null || naturals.isEmpty || _viewportSize.isEmpty) return;
+
+    final slot = _slotSize(spread);
+    var width = 0.0;
+    var height = 0.0;
+    for (final size in naturals.values) {
+      final laidOut = widget.pagesAtNaturalSize
+          ? size
+          : applyBoxFit(widget.pageFit, size, slot).destination;
+      if (laidOut.isEmpty) continue;
+      width += laidOut.width;
+      height = math.max(height, laidOut.height);
+    }
+    if (width <= 0 || height <= 0) return;
+
+    _zoomControllerFor(
+      index,
+    ).setPageMetrics(content: Size(width, height), baseScale: 1);
+  }
+
+  void _republishVisibleMetrics() {
+    for (final index in _visibleDisplayIndexes()) {
+      final item = widget.window.items[index];
+      if (item is SpreadDisplay) _publishPageMetrics(index, item);
+    }
+  }
+
+  /// The box one page is laid out in — half the screen for a pair, less the
+  /// center margin that [DoublePageView] puts between them.
+  Size _slotSize(SpreadDisplay spread) {
+    if (!spread.entry.isPair) {
+      return Size(_viewportSize.width, _viewportSize.height);
+    }
+    final margin =
+        widget.centerMargin == CenterMarginType.doublePage ||
+            widget.centerMargin == CenterMarginType.doubleAndWide
+        ? kCenterMargin
+        : 0.0;
+    return Size(
+      math.max(0, _viewportSize.width - margin) / 2,
+      _viewportSize.height,
+    );
+  }
+}
+
+class _PositionedDisplayEntry extends StatelessWidget {
+  const _PositionedDisplayEntry({
+    required this.axis,
+    required this.offset,
+    required this.child,
+  });
+
+  final Axis axis;
+  final double offset;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final translation = axis == Axis.horizontal
+        ? Offset(offset, 0)
+        : Offset(0, offset);
+    return Transform.translate(offset: translation, child: child);
+  }
+}
+
+class _ZoomedDisplayEntry extends StatelessWidget {
+  const _ZoomedDisplayEntry({
+    required this.controller,
+    required this.active,
+    required this.child,
+  });
+
+  final _PageZoomController controller;
+
+  /// True only for the focused page. A neighbor renders at base fit so its
+  /// retained zoom/pan can't displace it into the viewport.
+  final bool active;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!active) return child;
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, child) {
+        return Transform.translate(
+          offset: controller.offset,
+          child: Transform.scale(scale: controller.scale, child: child),
+        );
+      },
+      child: child,
+    );
+  }
+}
+
+class _PageZoomController extends ChangeNotifier {
+  _PageZoomController({
+    required this.minMultiplier,
+    required this.maxMultiplier,
+  }) : _scale = 1;
+
+  /// Zoom bounds as multiples of [baseScale] (1 except under Original size).
+  double minMultiplier;
+  double maxMultiplier;
+
+  Size _viewport = Size.zero;
+
+  /// The page's laid-out size at rest. Null until the image decodes; until then
+  /// the page is assumed to fill the viewport.
+  Size? _content;
+
+  /// Resting scale. Original size rests at 1:1 with the source pixels, which is
+  /// usually larger than the fitted page — so the page opens pannable.
+  double _baseScale = 1;
+
+  double _scale;
+  Offset _offset = Offset.zero;
+
+  double get scale => _scale;
+
+  double get baseScale => _baseScale;
+
+  double get minScale => _baseScale * minMultiplier;
+
+  double get maxScale => _baseScale * maxMultiplier;
+
+  Offset get offset => _offset;
+
+  /// Whether the page has room left to pan — decides if a drag belongs to it
+  /// or turns the page. Original size pans at rest, so it isn't "zoomed past 1".
+  bool get isActive => _maxPan != Offset.zero;
+
+  set offset(Offset value) {
+    _offset = _clampOffset(value);
+    notifyListeners();
+  }
+
+  void configure({
+    required double minMultiplier,
+    required double maxMultiplier,
+    required Size viewport,
+  }) {
+    final oldScale = _scale;
+    final oldOffset = _offset;
+    final oldMin = this.minMultiplier;
+    final oldMax = this.maxMultiplier;
+    final oldViewport = _viewport;
+
+    this.minMultiplier = minMultiplier;
+    this.maxMultiplier = maxMultiplier;
+    _viewport = viewport;
+    _scale = _scale.clamp(minScale, maxScale).toDouble();
+    _offset = _clampOffset(_offset);
+    if (oldScale == _scale &&
+        oldOffset == _offset &&
+        oldMin == minMultiplier &&
+        oldMax == maxMultiplier &&
+        oldViewport == viewport) {
+      return;
+    }
+    notifyListeners();
+  }
+
+  /// Feeds in the page's measured layout on decode. A page still at rest
+  /// follows the new resting scale; a zoomed page keeps where the reader put it.
+  void setPageMetrics({required Size content, required double baseScale}) {
+    if (_content == content && _baseScale == baseScale) return;
+    final wasAtRest = (_scale - _baseScale).abs() < 0.001;
+    _content = content;
+    _baseScale = baseScale;
+    if (wasAtRest) _scale = baseScale;
+    _scale = _scale.clamp(minScale, maxScale).toDouble();
+    _offset = _clampOffset(_offset);
+    notifyListeners();
+  }
+
+  void setScaleAround(double targetScale, Offset focal) {
+    final t = scaleAroundTarget(targetScale, focal);
+    setScaleOffset(t.scale, t.offset);
+  }
+
+  /// The (scale, offset) that [setScaleAround] would land on — without applying
+  /// it, so the viewport can animate toward it.
+  ({double scale, Offset offset}) scaleAroundTarget(
+    double targetScale,
+    Offset focal,
+  ) {
+    final nextScale = targetScale.clamp(minScale, maxScale).toDouble();
+    final scaleRatio = nextScale / _scale;
+    final viewportCenter = Offset(_viewport.width / 2, _viewport.height / 2);
+    final focalFromCenter = focal - viewportCenter - _offset;
+    return (
+      scale: nextScale,
+      // Clamped against where we're going, not where we are — panning room
+      // shrinks as you zoom out, and the old scale would allow too much.
+      offset: _clampOffsetAt(
+        _offset - focalFromCenter * (scaleRatio - 1),
+        nextScale,
+      ),
+    );
+  }
+
+  void setScaleOffset(double scale, Offset offset) {
+    _scale = scale.clamp(minScale, maxScale).toDouble();
+    _offset = _clampOffset(offset);
+    notifyListeners();
+  }
+
+  bool panBy(Offset delta) {
+    if (!canPanBy(delta)) return false;
+    _offset = _clampOffset(_offset + delta);
+    notifyListeners();
+    return true;
+  }
+
+  Offset clampOffset(Offset value) => _clampOffset(value);
+
+  bool canPanBy(Offset delta) {
+    final next = _offset + delta;
+    return _clampOffset(next) != _offset;
+  }
+
+  /// Whether [drag]'s dominant axis is one the page can still travel along.
+  bool canPanAlong(Offset drag) => canPanBy(
+    drag.dx.abs() >= drag.dy.abs() ? Offset(drag.dx, 0) : Offset(0, drag.dy),
+  );
+
+  bool canPan(_PanDirection direction) {
+    return switch (direction) {
+      _PanDirection.left => _offset.dx < _maxPan.dx - 1,
+      _PanDirection.right => _offset.dx > -_maxPan.dx + 1,
+      _PanDirection.up => _offset.dy < _maxPan.dy - 1,
+      _PanDirection.down => _offset.dy > -_maxPan.dy + 1,
+    };
+  }
+
+  bool panByDirection(_PanDirection direction) {
+    final amount = switch (direction) {
+      _PanDirection.left => Offset(_viewport.width * 0.8, 0),
+      _PanDirection.right => Offset(-_viewport.width * 0.8, 0),
+      _PanDirection.up => Offset(0, _viewport.height * 0.8),
+      _PanDirection.down => Offset(0, -_viewport.height * 0.8),
+    };
+    return panBy(amount);
+  }
+
+  Offset get _maxPan => _maxPanAt(_scale);
+
+  /// Max pan distance, measured from the page's own box (not the viewport) so
+  /// a letterboxed page can't be dragged into its own margin.
+  Offset _maxPanAt(double scale) {
+    final content = _content ?? _viewport;
+    return Offset(
+      math.max(0, (content.width * scale - _viewport.width) / 2),
+      math.max(0, (content.height * scale - _viewport.height) / 2),
+    );
+  }
+
+  Offset _clampOffset(Offset value) => _clampOffsetAt(value, _scale);
+
+  Offset _clampOffsetAt(Offset value, double scale) {
+    final maxPan = _maxPanAt(scale);
+    return Offset(
+      value.dx.clamp(-maxPan.dx, maxPan.dx).toDouble(),
+      value.dy.clamp(-maxPan.dy, maxPan.dy).toDouble(),
+    );
+  }
+}
+
+/// Which action a tap at [position] lands on. Pure, so the zone geometry can
+/// be tested against the overlay that draws it.
+@visibleForTesting
+TapAction tapActionForZone({
+  required Offset position,
+  required Size size,
+  required ReaderNavigationLayout layout,
+  required TapInvert tapInvert,
+  required bool smallerTapZones,
+}) {
+  final leftAction = tapInvert.invertsHorizontal
+      ? TapAction.next
+      : TapAction.previous;
+  final rightAction = tapInvert.invertsHorizontal
+      ? TapAction.previous
+      : TapAction.next;
+  final topAction = tapInvert.invertsVertical
+      ? TapAction.next
+      : TapAction.previous;
+  final bottomAction = tapInvert.invertsVertical
+      ? TapAction.previous
+      : TapAction.next;
+  final edgeWidth = size.width * (smallerTapZones ? 0.25 : 1 / 3);
+  final edgeHeight = size.height * (smallerTapZones ? 0.25 : 1 / 3);
+
+  return switch (layout) {
+    ReaderNavigationLayout.rightAndLeft =>
+      position.dx < edgeWidth
+          ? leftAction
+          : position.dx >= size.width - edgeWidth
+          ? rightAction
+          : TapAction.menu,
+    ReaderNavigationLayout.edge =>
+      position.dx < edgeWidth || position.dx >= size.width - edgeWidth
+          ? rightAction
+          : position.dy >= size.height - edgeHeight
+          ? leftAction
+          : TapAction.menu,
+    // Komikku's kindlish layout: menu across the top, left/right below it.
+    ReaderNavigationLayout.kindlish =>
+      position.dy < edgeHeight
+          ? TapAction.menu
+          : position.dx < edgeWidth
+          ? leftAction
+          : rightAction,
+    ReaderNavigationLayout.lShaped =>
+      position.dy < edgeHeight
+          ? topAction
+          : position.dy >= size.height - edgeHeight
+          ? bottomAction
+          : position.dx < edgeWidth
+          ? leftAction
+          : position.dx >= size.width - edgeWidth
+          ? rightAction
+          : TapAction.menu,
+    ReaderNavigationLayout.defaultNavigation ||
+    ReaderNavigationLayout.disabled => TapAction.menu,
+  };
+}

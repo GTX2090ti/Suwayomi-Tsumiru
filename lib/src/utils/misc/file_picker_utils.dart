@@ -1,0 +1,57 @@
+import 'dart:async';
+
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:http/http.dart';
+
+import '../extensions/custom_extensions.dart';
+
+abstract class FilePickerUtils {
+  static Future<PlatformFile?> pickFile({
+    BuildContext? context,
+    List<String>? extensions,
+  }) async {
+    final file = await FilePicker.pickFile(
+      type: FileType.custom,
+      allowedExtensions: extensions,
+    );
+    if (context != null && context.mounted) {
+      // Web has no file paths, so the bytes have to come back with the pick.
+      final bytes = kIsWeb && file != null ? await file.readAsBytes() : null;
+      if (!context.mounted) return file;
+      if (file == null ||
+          file.name.isBlank ||
+          (kIsWeb && bytes.isBlank || (!kIsWeb && (file.path).isBlank))) {
+        throw context.l10n.errorFilePick;
+      }
+      if (extensions.isNotBlank &&
+          !extensions!.any((e) => file.name.endsWith(".$e"))) {
+        throw context.l10n.errorFilePickUnknownExtension(
+            extensions.join(" ${context.l10n.or} "));
+      }
+    }
+    return file;
+  }
+
+  static Future<MultipartFile> convertToMultipartFile(PlatformFile file,
+      [String? fileName]) async {
+    final String newFileName = fileName ?? file.name.split('.').first;
+    final String newFileNameWithExtension = file.extension.isNotBlank
+        ? "$newFileName.${file.extension}"
+        : newFileName;
+    if (kIsWeb) {
+      return MultipartFile.fromBytes(
+        newFileName,
+        await file.readAsBytes(),
+        filename: newFileNameWithExtension,
+      );
+    } else {
+      return MultipartFile.fromPath(
+        newFileName,
+        file.path!,
+        filename: newFileNameWithExtension,
+      );
+    }
+  }
+}

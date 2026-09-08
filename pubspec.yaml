@@ -1,0 +1,173 @@
+name: tsumiru
+description: A manga reader client for Suwayomi Server.
+
+publish_to: "none"
+# Public version matches the Tsumiru release line; build number keeps
+# climbing from the inherited 0.6.4+28 so Android upgrades stay monotonic.
+version: 1.2.1+53
+
+environment:
+  sdk: ">=3.9.0 <4.0.0"
+
+dependencies:
+  animated_vector: ^0.2.2
+  app_links: ^7.2.1
+  built_collection: ^5.1.1
+  collection: ^1.19.0
+  cached_network_image: ^3.2.2
+  cached_network_image_platform_interface: ^4.0.0
+  connectivity_plus: ^7.0.0
+  wakelock_plus: ^1.7.0
+  cupertino_icons: ^1.0.5
+  # Accent folding for library title sort — Dart and intl ship no collator.
+  diacritic: ^0.1.6
+  drift: ^2.32.0
+  extension_type_unions: ^1.0.10
+  file: ^7.0.0
+  file_picker: ^12.1.1
+  flex_color_picker: 3.8.0
+  flutter:
+    sdk: flutter
+  flutter_android_volume_keydown:
+    git:
+      url: https://github.com/DattatreyaReddy/flutter_android_volume_keydown
+      ref: "9db2306fd2b4f804f5b9fbf69b97b211f47f527c"
+  flutter_cache_manager: ^3.3.0
+  flutter_foreground_task: ^11.0.1
+  flutter_hooks: ^0.21.0
+  flutter_localizations:
+    sdk: flutter
+  flutter_markdown_plus: ^1.0.12
+  flutter_secure_storage: ^10.3.1
+  # Masonry / aligned grids for the library's non-uniform + staggered cover
+  # styles (SliverGrid can only give every tile one fixed extent).
+  flutter_staggered_grid_view: ^0.7.0
+  fluttertoast: ^10.0.0
+  font_awesome_flutter: ^11.0.0
+  freezed_annotation: ^3.0.0
+  gap: ^3.0.1
+  go_router: ^17.0.0
+  gql: ^1.0.1-alpha+1730759315362
+  gql_http_link: ^1.0.1+1
+  graphql: ^5.2.0-beta.10
+  graphql_flutter: ^5.2.0-beta.8
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  hooks_riverpod: ^3.0.0
+  http: ^1.2.0
+  infinite_scroll_pagination: ^4.0.0
+  intl: ^0.20.2
+  json_annotation: ^4.9.0
+  logger: ^2.5.0
+  # HCT (perceived-lightness) color space for the light-mode genre chips. Ships
+  # with Flutter itself; declared here because we import it directly.
+  material_color_utilities: ^0.13.0
+  network_info_plus: ^8.2.1
+  package_info_plus: ^10.2.1
+  path: ^1.8.3
+  path_provider: ^2.0.11
+  pub_semver: ^2.1.2
+  queue: ^3.1.0+2
+  riverpod_annotation: ^4.0.0
+  # Pinned to yakagami's fork (2-line addition over upstream) which exposes
+  # ScrollPosition on ScrollOffsetController. Required for zoom_view to
+  # coordinate scroll position with pinch-zoom in the multi-image readers.
+  # Tracking upstream merge of the same fix at:
+  #   https://github.com/google/flutter.widgets/pull/535
+  # Revert to a pub.dev release once that lands.
+  scrollable_positioned_list:
+    git:
+      url: https://github.com/yakagami/scrollable_positioned_list
+      ref: "4641e83"
+  shared_preferences: ^2.0.15
+  sqlite3: ^3.0.0
+  shimmer: ^3.0.0
+  unorm_dart: ^0.3.2
+  url_launcher: ^6.1.6
+  web_socket_channel: ^3.0.0
+  screen_brightness: ^2.1.11
+  share_plus: ^13.3.0
+  gal: ^2.3.2
+  image: ^4.8.0
+  window_manager: ^0.5.2
+  flutter_local_notifications: ^22.1.0
+  workmanager: ^0.10.9
+  battery_plus: ^7.1.1
+
+# Pinned until juliansteenbakker/flutter_secure_storage#1104 lands upstream.
+# Our macOS builds are ad-hoc signed, so the plugin's synchronizable keychain
+# queries fail for want of an entitlement and no login survives a restart.
+dependency_overrides:
+  flutter_secure_storage_darwin:
+    git:
+      url: https://github.com/Suwayomi/flutter_secure_storage.git
+      ref: 8d1209c9debd56b176a2efe99c308ba47d2b56e8
+      path: flutter_secure_storage_darwin
+
+dev_dependencies:
+  cross_file: ^0.3.5+4
+  build_runner: ^2.4.14
+  # flutter_flavorizr: ^2.1.5
+  drift_dev: ^2.32.0
+  fake_async: ^1.3.3
+  flutter_launcher_icons: ^0.14.1
+  flutter_lints: ^6.0.0
+  flutter_native_splash: ^2.2.14
+  flutter_riverpod: ^3.3.2
+  flutter_test:
+    sdk: flutter
+  freezed: ^3.0.0
+  # Keep aligned with the go_router runtime major (builder 4.x ↔ go_router 17.x).
+  go_router_builder: ^4.0.0
+  graphql_codegen: ^3.0.0
+  json_serializable: ^6.5.4
+  lints: ^6.1.0
+  riverpod_generator: ^4.0.4
+  vector_math: ^2.4.2
+  workmanager_android: ^0.10.8
+
+  path_provider_platform_interface: ^2.1.3
+flutter:
+  uses-material-design: true
+  generate: true
+  assets:
+    - assets/icons/
+    - assets/icons/launcher/
+
+# flutter_gen removed from the build pipeline: flutter_gen_runner's build.yaml is
+# incompatible with build_runner_core 9.x (Flutter 3.35 / Dart 3.9). Its output,
+# lib/src/constants/gen/assets.gen.dart, is committed and treated as source; the
+# asset set (static icons) changes rarely. Regenerate manually with a one-off
+# flutter_gen_runner add if assets ever change.
+flutter_native_splash:
+  color: "#0b0d1a"
+  image: assets/icons/dark_icon.png
+  color_dark: "#0b0d1a"
+  image_dark: assets/icons/light_icon.png
+  android_12:
+    color: "#0b0d1a"
+    color_dark: "#0b0d1a"
+    icon_background_color: "#0b0d1a"
+    icon_background_color_dark: "#0b0d1a"
+    image: assets/icons/dark_icon.png
+    image_dark: assets/icons/light_icon.png
+
+flutter_launcher_icons:
+  android: "launcher_icon"
+  adaptive_icon_background: "#02061D"
+  adaptive_icon_foreground: "assets/icons/launcher/tsumiru_icon_fg.png"
+  ios: true
+  remove_alpha_ios: true
+  image_path: "assets/icons/launcher/tsumiru_icon.png"
+  image_path_ios: "assets/icons/launcher/tsumiru_icon.png"
+  web:
+    generate: true
+    image_path: "assets/icons/launcher/tsumiru_icon.png"
+    background_color: "#02061D"
+    theme_color: "#7c7bff"
+  windows:
+    generate: true
+    image_path: "assets/icons/launcher/tsumiru_icon_rounded.png"
+  macos:
+    generate: true
+    image_path: "assets/icons/launcher/tsumiru_icon_rounded.png"
