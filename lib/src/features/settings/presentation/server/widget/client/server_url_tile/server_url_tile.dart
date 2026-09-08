@@ -157,6 +157,21 @@ Future<bool> serverUrlIsReachable(String url, {http.Client? client}) async {
   }
 }
 
+/// Subscribes to connectivity changes without letting a platform failure
+/// escape. On a sandboxed Linux build there is no system D-Bus to reach
+/// NetworkManager through, and that failure arrives after listen() returns,
+/// so a try/catch around the call cannot see it. An uncaught async error
+/// before the first frame is treated as a fatal startup failure.
+@visibleForTesting
+StreamSubscription<List<ConnectivityResult>> listenToConnectivity(
+  Stream<List<ConnectivityResult>> changes,
+  void Function() onChange,
+) => changes.listen(
+  (_) => onChange(),
+  onError: (_) {},
+  cancelOnError: false,
+);
+
 /// Keeps [serverUrlProvider] pointed at the preferred endpoint. It runs at
 /// startup and each interface change, so moving between Wi-Fi and mobile data
 /// automatically re-evaluates the LAN address.
@@ -170,12 +185,17 @@ class ServerEndpointResolver extends _$ServerEndpointResolver {
     final external =
         ref.watch(serverExternalUrlProvider) ?? DBKeys.serverUrl.initial;
     ref.watch(serverLanUrlProvider);
-    // Desktop and widget-test platforms may not register connectivity_plus.
-    // Startup selection still works there; they simply cannot receive later
-    // interface-change callbacks.
+    // Desktop and widget-test platforms may not register connectivity_plus,
+    // and a sandboxed Linux build (Flatpak) has no system D-Bus to reach
+    // NetworkManager through. That failure arrives asynchronously, after
+    // listen() returns, so it needs onError rather than a try/catch: an
+    // uncaught async error before the first frame is treated as a fatal
+    // startup failure. Startup selection still works without the stream;
+    // only later interface-change callbacks are lost.
     try {
-      _connectivitySubscription ??= Connectivity().onConnectivityChanged.listen(
-        (_) => unawaited(refresh()),
+      _connectivitySubscription ??= listenToConnectivity(
+        Connectivity().onConnectivityChanged,
+        () => unawaited(refresh()),
       );
     } catch (_) {}
     ref.onDispose(() => _connectivitySubscription?.cancel());
