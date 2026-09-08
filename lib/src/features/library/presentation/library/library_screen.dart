@@ -1039,6 +1039,9 @@ class _GroupedMangaList extends ConsumerWidget {
                   .fetchUpdates()
                   .catchError((Object _) {}),
             );
+            // Categories are fetched once per launch, so one added in the
+            // WebUI could not appear without restarting the app.
+            ref.invalidate(categoryControllerProvider);
             ref.invalidate(libraryMangaListProvider);
             await ref.read(libraryMangaListProvider.future);
           },
